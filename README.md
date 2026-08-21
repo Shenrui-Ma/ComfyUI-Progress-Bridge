@@ -1,0 +1,122 @@
+# ComfyUI Progress Bridge
+
+A lightweight, server-side [ComfyUI](https://github.com/comfyanonymous/ComfyUI) extension that mirrors live execution events to an external visual progress monitor over UDP.
+
+It is designed for desktop companions, status docks, dashboards, and other observers that need the real active node and sampler progress without hijacking the WebSocket used by the client that submitted the prompt.
+
+## Why this exists
+
+ComfyUI normally sends `executing` and `progress` WebSocket events to the submitting client's `client_id`. A second WebSocket opened by an external monitor therefore may see the queue but miss node-level events.
+
+This extension preserves ComfyUI's original delivery and emits a second, best-effort UDP copy on loopback:
+
+```text
+ComfyUI PromptServer.send_sync
+        ├── original WebSocket delivery (unchanged)
+        └── compact UDP event → external visual monitor
+```
+
+## Features
+
+- Mirrors `executing`, `progress`, `execution_error`, and `execution_interrupted`
+- Preserves the original `PromptServer.send_sync` return value and client routing
+- Sends only a compact allowlist of useful fields
+- Uses loopback by default; no network service is exposed
+- Has no third-party runtime dependencies
+- Is idempotent and fail-open: monitoring errors never stop ComfyUI execution
+- Provides a server extension only; it intentionally adds no workflow node
+
+## Installation
+
+```bash
+cd /path/to/ComfyUI/custom_nodes
+git clone https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge.git
+```
+
+Restart that ComfyUI instance. Its startup log should include, for example:
+
+```text
+[ComfyUI Progress Bridge] UDP 127.0.0.1:30189
+```
+
+For ComfyUI on port `8189`, the default bridge port is `30189`. For port `8202`, it is `30202`.
+
+> Each running ComfyUI process must be restarted once after installation. Wait for `running=0` and `pending=0` before restarting a production instance.
+
+## Receive events
+
+Run the included receiver:
+
+```bash
+python examples/receive_progress.py --comfy-port 8189
+```
+
+Then submit a normal ComfyUI workflow. The receiver prints newline-delimited JSON such as:
+
+```json
+{"type":"executing","data":{"prompt_id":"abc","node":"4"}}
+{"type":"progress","data":{"prompt_id":"abc","node":"24","value":9,"max":12}}
+{"type":"executing","data":{"prompt_id":"abc","node":"27"}}
+```
+
+An external monitor can join `prompt_id` and `node` with the workflow graph returned by ComfyUI's `/queue` endpoint to display friendly stages such as model loading, sampling, VAE decode, and saving.
+
+## Configuration
+
+Environment variables must be set before starting ComfyUI:
+
+- `COMFY_PROGRESS_BRIDGE_HOST`: numeric IPv4 UDP destination, default `127.0.0.1` (hostnames are rejected to prevent DNS work on the event path)
+- `COMFY_PROGRESS_BRIDGE_PORT`: explicit UDP destination port
+
+If no explicit port is set, the extension calculates:
+
+```text
+30000 + (ComfyUI HTTP port % 1000)
+```
+
+Example:
+
+```bash
+COMFY_PROGRESS_BRIDGE_PORT=41000 python main.py --port 8189
+```
+
+## Event contract
+
+Only these event types are mirrored:
+
+- `executing`
+- `progress`
+- `execution_error`
+- `execution_interrupted`
+
+Only these data fields are eligible for forwarding:
+
+- `prompt_id`
+- `node`, `node_id`, `display_node`
+- `value`, `max`
+- `exception_message`, `node_type`
+
+Binary previews, workflow inputs, prompts, model names, images, and generated media are not forwarded.
+
+## Security and compatibility
+
+- The default destination is loopback. Setting a non-loopback destination can expose prompt IDs, node IDs, progress, and error messages to that network destination.
+- UDP is intentionally best-effort. A dropped progress packet does not affect inference.
+- The implementation wraps an internal ComfyUI method, `PromptServer.send_sync`. The wrapper is small and covered by tests, but upstream internal API changes may require an update.
+- This repository targets Python 3.10+ and current ComfyUI releases.
+
+## Development
+
+```bash
+uv sync --extra dev
+uv run pytest -q
+uv run ruff check .
+```
+
+## Comfy Registry
+
+The repository follows the standard ComfyUI custom-node layout and includes PEP 621 metadata. Registry-specific `[tool.comfy]` publisher metadata is intentionally not guessed; it should be added after the owner creates a Publisher ID at [Comfy Registry](https://registry.comfy.org/).
+
+## License
+
+MIT
