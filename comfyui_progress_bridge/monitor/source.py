@@ -304,6 +304,7 @@ def build_ssh_argv(
     host: str,
     user: str,
     remote_argv: Sequence[str],
+    port: int = 22,
     identity_file: str | None = None,
     ssh_binary: str = "ssh",
 ) -> list[str]:
@@ -312,6 +313,8 @@ def build_ssh_argv(
         raise ValueError("invalid SSH host")
     if not isinstance(user, str) or user.startswith("-") or not _SAFE_SSH_USER.fullmatch(user):
         raise ValueError("invalid SSH user")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("invalid SSH port")
     remote = _argv(remote_argv, "remote_argv", remote_safe=True)
     argv = [
         *_argv([ssh_binary], "ssh_binary"),
@@ -323,6 +326,8 @@ def build_ssh_argv(
         "-o",
         "ServerAliveCountMax=3",
     ]
+    if port != 22:
+        argv.extend(["-p", str(port)])
     if identity_file is not None:
         argv.extend(["-i", _argv([identity_file], "identity_file")[0]])
     argv.append(f"{user}@{host}")
@@ -330,10 +335,15 @@ def build_ssh_argv(
     return argv
 
 
-def _redact(message: str) -> str:
-    return _SECRET.sub(lambda match: f"{match.group(1)}=[REDACTED]", message)[
+def redact_error(message: object) -> str:
+    """Bound and remove common credential assignments from an error message."""
+    return _SECRET.sub(lambda match: f"{match.group(1)}=[REDACTED]", str(message))[
         :MAX_STDERR_CHARS
     ]
+
+
+def _redact(message: str) -> str:
+    return redact_error(message)
 
 
 @dataclass
@@ -663,6 +673,7 @@ class SSHSource(LocalSource):
         user: str,
         remote_argv: Sequence[str],
         on_record: Callable[[dict[str, Any]], None],
+        port: int = 22,
         identity_file: str | None = None,
         on_error: Callable[[str], None] | None = None,
         popen: Callable[..., Any] = subprocess.Popen,
@@ -673,6 +684,7 @@ class SSHSource(LocalSource):
                 host=host,
                 user=user,
                 remote_argv=remote_argv,
+                port=port,
                 identity_file=identity_file,
             ),
             on_record=on_record,

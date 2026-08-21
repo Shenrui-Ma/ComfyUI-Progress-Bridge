@@ -235,6 +235,9 @@ def test_command_builders_validate_and_ssh_is_persistent_argv_without_password()
         popen=lambda *args, **kwargs: FakeProcess(""),
     )
     assert source.argv[-2:] == ["monitor@worker.example", "probe"]
+    assert build_ssh_argv(
+        host="worker.example", user="monitor", port=2222, remote_argv=["probe"]
+    )[-4:] == ["-p", "2222", "monitor@worker.example", "probe"]
 
 
 def test_strict_record_validation_drops_malformed_required_fields_and_uuid_types():

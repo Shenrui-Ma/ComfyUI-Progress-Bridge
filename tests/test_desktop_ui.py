@@ -1,0 +1,541 @@
+import os
+import threading
+from uuid import UUID
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+from PyQt6.QtCore import QEvent, QRect, Qt
+from PyQt6.QtGui import QColor, QImage, QKeyEvent
+from PyQt6.QtWidgets import QApplication, QDialog, QDialogButtonBox
+
+from comfyui_progress_bridge.desktop import app as desktop_app
+from comfyui_progress_bridge.desktop.app import DesktopMonitor, model_from_record
+from comfyui_progress_bridge.desktop.i18n import Translator
+from comfyui_progress_bridge.desktop.settings import AppSettings, EndpointConfig, SettingsStore
+from comfyui_progress_bridge.desktop.widgets import ElidedLabel, ProgressWindow, SettingsDialog
+from comfyui_progress_bridge.monitor.models import (
+    EndpointId,
+    EndpointState,
+    MonitorState,
+    Reduction,
+    TaskKey,
+    TaskState,
+    Transition,
+)
+
+
+@pytest.fixture(scope="session")
+def app():
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def endpoints():
+    return (
+        EndpointConfig("127.0.0.1", 8188, "GPU one", "#6C8EFF"),
+        EndpointConfig("127.0.0.1", 8189, "GPU two", "#FF8A65"),
+        EndpointConfig("127.0.0.1", 8190, "GPU three", "#66BB6A"),
+    )
+
+
+def state_for(configs, *, node="KSampler with a very long descriptive title"):
+    endpoint_states = {}
+    tasks = {}
+    for index, config in enumerate(configs):
+        endpoint = EndpointId(config.host, config.port, UUID(int=index + 1))
+        endpoint_states[endpoint] = EndpointState(endpoint, online=index != 2, busy=True)
+        key = TaskKey(endpoint, f"p{index}")
+        tasks[key] = TaskState(key, "running", "sampling", node, "KSampler", 7, 20)
+    return MonitorState.from_parts(endpoint_states, tasks, {})
+
+
+@pytest.mark.parametrize("language", ["zh-CN", "ja-JP", "en-US", "ko-KR"])
+def test_settings_dialog_localizes_endpoint_headers_and_standard_buttons(app, language):
+    dialog = SettingsDialog(AppSettings(language=language))
+    translator = Translator(language)
+    header_keys = (
+        "name",
+        "host",
+        "port",
+        "color",
+        "ssh_source",
+        "ssh_host",
+        "ssh_user",
+        "ssh_port",
+        "identity_file",
+        "remote_python",
+        "probe_path",
+    )
+    headers = [
+        dialog.endpoint_table.horizontalHeaderItem(column).text()
+        for column in range(dialog.endpoint_table.columnCount())
+    ]
+    assert headers == [translator(key) for key in header_keys]
+
+    button_box = dialog.findChild(QDialogButtonBox)
+    assert button_box is not None
+    assert button_box.button(QDialogButtonBox.StandardButton.Save).text() == translator("save")
+    assert button_box.button(QDialogButtonBox.StandardButton.Cancel).text() == translator("cancel")
+
+    if language != "en-US":
+        english = Translator("en-US")
+        localized_keys = header_keys[5:] + ("save", "cancel")
+        assert all(translator(key) != english(key) for key in localized_keys)
+    dialog.close()
+
+
+def test_multiple_cards_have_stable_unique_nonoverlapping_layout(app, endpoints, tmp_path):
+    window = ProgressWindow(AppSettings(endpoints=endpoints), store=SettingsStore(tmp_path / "x"))
+    window.render(Reduction(state_for(endpoints)))
+    window.show()
+    app.processEvents()
+    assert [card.config.port for card in window.cards] == [8188, 8189, 8190]
+    rects = [card.geometry() for card in window.cards]
+    assert all(rects[i].bottom() < rects[i + 1].top() for i in range(len(rects) - 1))
+    assert window.scroll_area.maximumHeight() <= window.max_scroll_height
+    window.close()
+
+
+def test_simple_and_professional_modes(app, endpoints, tmp_path):
+    simple = ProgressWindow(
+        AppSettings(mode="simple", endpoints=endpoints[:1]), store=SettingsStore(tmp_path / "a")
+    )
+    simple.render(Reduction(state_for(endpoints[:1])))
+    assert simple.cards[0].details.isHidden()
+    assert simple.cards[0].status_label.isHidden()
+    assert "1" in simple.cards[0].queue_label.text()
+    pro = ProgressWindow(
+        AppSettings(mode="professional", endpoints=endpoints[:1]),
+        store=SettingsStore(tmp_path / "b"),
+    )
+    pro.render(Reduction(state_for(endpoints[:1])))
+    assert not pro.cards[0].details.isHidden()
+    text = " ".join(x.toolTip() for x in pro.cards[0].findChildren(ElidedLabel))
+    assert "KSampler" in text
+    assert "7 / 20" in pro.cards[0].progress_label.text()
+
+
+def test_elision_retains_tooltip_and_does_not_change_bounds(app):
+    label = ElidedLabel()
+    label.setFixedWidth(90)
+    full = "this is a deliberately extremely long node name"
+    label.set_full_text(full)
+    label.show()
+    app.processEvents()
+    assert label.toolTip() == full
+    assert label.text() != full and "…" in label.text()
+    assert label.width() == 90
+
+
+def _png(path, color):
+    image = QImage(24, 24, QImage.Format.Format_ARGB32)
+    image.fill(QColor(color))
+    assert image.save(str(path), "PNG")
+
+
+def test_only_top_card_has_avatar_and_success_rotates_once(app, endpoints, tmp_path):
+    paths = [tmp_path / f"{i}.png" for i in range(3)]
+    for path, color in zip(paths, ["red", "green", "blue"], strict=True):
+        _png(path, color)
+    settings = AppSettings(
+        endpoints=endpoints, avatar_enabled=True, avatar_paths=tuple(str(x) for x in paths)
+    )
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings"))
+    state = state_for(endpoints)
+    window.render(Reduction(state))
+    assert window.cards[0].avatar is not None
+    assert window.avatar_index == 0
+    assert all(card.avatar is None for card in window.cards[1:])
+    first = window.avatar_index
+    endpoint = next(iter(state.endpoints))
+    task = next(iter(state.tasks))
+    success = Reduction(state, (Transition("task_success", endpoint, task),))
+    window.render(success)
+    assert window.avatar_index == (first + 1) % 3
+    window.render(success)
+    assert window.avatar_index == (first + 1) % 3
+    window.render(Reduction(state, (Transition("queue_completed", endpoint),)))
+    assert window.avatar_index == (first + 1) % 3
+
+
+def test_opacity_collapse_dock_and_reset_clamp(app, endpoints, tmp_path):
+    store = SettingsStore(tmp_path / "settings.json")
+    window = ProgressWindow(AppSettings(opacity=61, endpoints=endpoints), store=store)
+    window.show()
+    app.processEvents()
+    assert abs(window.windowOpacity() - 0.61) < 0.01
+    window.set_collapsed(True)
+    assert window.scroll_area.isHidden() and window.settings.collapsed
+    window.set_collapsed(False)
+    assert not window.scroll_area.isHidden()
+    available = QRect(100, 200, 700, 500)
+    point = window.reset_position(available)
+    assert available.contains(point)
+    window.move(99999, -99999)
+    clamped = window.clamp_to(available)
+    assert available.contains(clamped)
+    window.set_dock_enabled(False)
+    assert window.isHidden()
+    assert SettingsStore(store.path).load().dock_enabled is False
+
+
+def test_window_native_flags_and_controls(app, endpoints, tmp_path):
+    from PyQt6.QtCore import Qt
+
+    window = ProgressWindow(
+        AppSettings(endpoints=endpoints[:1]), store=SettingsStore(tmp_path / "x")
+    )
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert window.drag_handle.objectName() == "dragHandle"
+    assert window.gear_button.toolTip()
+
+
+def test_protocol_records_drive_reducer_and_thirty_second_expiry(app, endpoints, tmp_path):
+    window = ProgressWindow(
+        AppSettings(endpoints=endpoints[:1]), store=SettingsStore(tmp_path / "settings")
+    )
+    monitor = DesktopMonitor(window, window.settings)
+    now = {"value": 10.0}
+    monitor.reducer.clock = lambda: now["value"]
+    common = {
+        "schema": 2,
+        "endpoint": {"host": "127.0.0.1", "port": 8188},
+        "instance_id": str(UUID(int=1)),
+        "observed_at": 10.0,
+    }
+    monitor.consume_record(
+        {
+            **common,
+            "kind": "snapshot",
+            "online": True,
+            "running_prompt_ids": ["prompt"],
+            "pending_prompt_ids": [],
+        }
+    )
+    monitor.consume_record(
+        {
+            **common,
+            "kind": "event",
+            "sequence": 1,
+            "type": "execution_success",
+            "data": {"prompt_id": "prompt", "display_node": "Done"},
+        }
+    )
+    assert window.cards[0].progress_label.text() == window.translator("success")
+    assert len(monitor.reducer.state.tasks) == 1
+    now["value"] = 39.999
+    monitor.expire()
+    assert len(monitor.reducer.state.tasks) == 1
+    now["value"] = 40.0
+    monitor.expire()
+    assert not monitor.reducer.state.tasks
+    assert model_from_record({"kind": "status"}) is None
+
+
+def test_monitor_groups_probe_processes_by_transport(app, tmp_path, monkeypatch):
+    created = []
+
+    class FakeSource:
+        def __init__(self, argv=None, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.started = False
+            created.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(desktop_app, "LocalSource", FakeSource)
+    monkeypatch.setattr(desktop_app, "SSHSource", FakeSource)
+    configs = (
+        EndpointConfig("127.0.0.1", 8188, "Local one", "#111111"),
+        EndpointConfig("127.0.0.1", 8189, "Local two", "#222222"),
+        EndpointConfig(
+            "127.0.0.1",
+            8190,
+            "Remote one",
+            "#333333",
+            ssh_enabled=True,
+            ssh_host="worker-a",
+            ssh_user="monitor",
+        ),
+        EndpointConfig(
+            "127.0.0.1",
+            8191,
+            "Remote two",
+            "#444444",
+            ssh_enabled=True,
+            ssh_host="worker-a",
+            ssh_user="monitor",
+        ),
+        EndpointConfig(
+            "127.0.0.1",
+            8192,
+            "Other worker",
+            "#555555",
+            ssh_enabled=True,
+            ssh_host="worker-b",
+            ssh_user="monitor",
+        ),
+    )
+    settings = AppSettings(endpoints=configs)
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings"))
+    monitor = DesktopMonitor(window, settings)
+    monitor.start()
+
+    local = [source for source in created if source.argv is not None]
+    remote = [source for source in created if source.argv is None]
+    assert len(local) == 1
+    assert local[0].argv[-2:] == ["127.0.0.1:8188", "127.0.0.1:8189"]
+    assert len(remote) == 2
+    by_host = {source.kwargs["host"]: source for source in remote}
+    assert by_host["worker-a"].kwargs["remote_argv"][-2:] == [
+        "127.0.0.1:8190",
+        "127.0.0.1:8191",
+    ]
+    assert by_host["worker-b"].kwargs["remote_argv"][-1:] == ["127.0.0.1:8192"]
+    assert all(source.started for source in created)
+
+    for offset, port in enumerate((8188, 8189), start=1):
+        local[0].kwargs["on_record"](
+            {
+                "kind": "snapshot",
+                "schema": 2,
+                "endpoint": {"host": "127.0.0.1", "port": port},
+                "instance_id": str(UUID(int=offset)),
+                "observed_at": 1.0,
+                "online": True,
+                "running_prompt_ids": [f"prompt-{port}"],
+                "pending_prompt_ids": [],
+            }
+        )
+    assert {key.endpoint.port for key in monitor.reducer.state.tasks} == {8188, 8189}
+
+
+def test_disabled_monitor_has_no_sources_and_tray_recovery_restarts(app, tmp_path, monkeypatch):
+    created = []
+
+    class FakeSource:
+        def __init__(self, argv=None, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+            self.joined = False
+            created.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def join(self, timeout=None):
+            self.joined = timeout == 2
+
+    monkeypatch.setattr(desktop_app, "LocalSource", FakeSource)
+    settings = AppSettings(dock_enabled=False)
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, settings)
+    monitor.start()
+    assert monitor.sources == [] and created == []
+
+    window.show_action.trigger()
+    assert window.isVisible()
+    assert len(created) == 1 and created[0].started
+    window.set_dock_enabled(False)
+    assert window.isHidden()
+    assert monitor.sources == []
+    assert created[0].stopped and created[0].joined
+
+
+def test_live_settings_restart_uses_complete_transport_key(app, tmp_path, monkeypatch):
+    created = []
+
+    class FakeSource:
+        def __init__(self, argv=None, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.stopped = False
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.stopped = True
+
+        def join(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(desktop_app, "LocalSource", FakeSource)
+    monkeypatch.setattr(desktop_app, "SSHSource", FakeSource)
+    initial = AppSettings()
+    window = ProgressWindow(initial, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, initial)
+    monitor.start()
+    old = created[0]
+    changed = AppSettings(
+        endpoints=(
+            EndpointConfig(
+                "127.0.0.1",
+                8188,
+                "worker one",
+                "#111111",
+                ssh_enabled=True,
+                ssh_host="worker",
+                ssh_user="alice",
+            ),
+            EndpointConfig(
+                "127.0.0.1",
+                8189,
+                "worker two",
+                "#222222",
+                ssh_enabled=True,
+                ssh_host="worker",
+                ssh_user="bob",
+            ),
+        )
+    )
+    window.apply_settings(changed)
+    window.settings_applied.emit(changed)
+    assert old.stopped
+    remote = [source for source in created[1:] if source.argv is None]
+    assert len(remote) == 2
+    assert {source.kwargs["user"] for source in remote} == {"alice", "bob"}
+    assert monitor.reducer.state == MonitorState()
+
+
+def test_source_errors_are_queued_redacted_bounded_and_visible(app, tmp_path):
+    window = ProgressWindow(AppSettings(), store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, window.settings)
+    thread = threading.Thread(target=monitor._error, args=("password=hunter2 connection refused",))
+    thread.start()
+    thread.join()
+    app.processEvents()
+    assert monitor.errors == ["password=[REDACTED] connection refused"]
+    assert "hunter2" not in window.source_status.text()
+    assert not window.source_status.isHidden()
+    assert all("hunter2" not in card.status_label.toolTip() for card in window.cards)
+
+
+def test_validation_feedback_accessibility_keyboard_and_reclamp(app, tmp_path, monkeypatch):
+    from comfyui_progress_bridge.desktop import widgets
+
+    warnings = []
+    monkeypatch.setattr(widgets.QMessageBox, "warning", lambda *args: warnings.append(args))
+    dialog = SettingsDialog(AppSettings())
+    dialog.endpoint_table.item(0, 1).setText("localhost")
+    dialog._validate_and_accept()
+    assert "host" in dialog.validation_label.text()
+    assert warnings and dialog.result() != dialog.DialogCode.Accepted
+
+    window = ProgressWindow(AppSettings(), store=SettingsStore(tmp_path / "settings.json"))
+    assert window.drag_handle.accessibleName()
+    assert window.collapse_button.accessibleName()
+    assert window.gear_button.accessibleName()
+    assert window.close_button.accessibleDescription()
+    before = window.pos()
+    event = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Right,
+        Qt.KeyboardModifier.AltModifier,
+    )
+    window.drag_handle.keyPressEvent(event)
+    assert window.x() >= before.x()
+    window.move(99999, 99999)
+    window.schedule_clamp()
+    app.processEvents()
+    screen = QApplication.primaryScreen()
+    assert screen is not None and screen.availableGeometry().contains(window.pos())
+
+
+def test_show_cli_flag_is_runtime_only(tmp_path):
+    assert desktop_app._parser().parse_args(["--show"]).show is True
+    assert desktop_app._parser().parse_args([]).show is False
+    path = tmp_path / "settings.json"
+    SettingsStore(path).save(AppSettings(dock_enabled=False))
+    persisted = SettingsStore(path).load()
+    shown = desktop_app.runtime_settings(persisted, show=True)
+    assert shown.dock_enabled is True
+    assert persisted.dock_enabled is False
+    assert SettingsStore(path).load().dock_enabled is False
+
+
+def test_show_override_does_not_leak_during_window_initialization(app, tmp_path):
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+    persisted = AppSettings(dock_enabled=False)
+    store.save(persisted)
+
+    window = ProgressWindow(
+        desktop_app.runtime_settings(persisted, show=True),
+        persisted_settings=persisted,
+        store=store,
+    )
+
+    assert window.settings.dock_enabled is True
+    assert store.load().dock_enabled is False
+    window.close()
+
+
+def test_demo_endpoints_never_leak_from_internal_window_saves(app, tmp_path):
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+    persisted = AppSettings(
+        endpoints=(EndpointConfig("127.0.0.1", 9000, "Real endpoint", "#123456"),)
+    )
+    store.save(persisted)
+    runtime = desktop_app.runtime_settings(persisted, demo=True)
+
+    window = ProgressWindow(runtime, persisted_settings=persisted, store=store)
+    assert store.load().endpoints == persisted.endpoints
+    window.reset_position(QRect(0, 0, 800, 600))
+    assert store.load().endpoints == persisted.endpoints
+    window.move(50, 50)
+    window.persist_position()
+    assert store.load().endpoints == persisted.endpoints
+    window.set_collapsed(True)
+    assert store.load().endpoints == persisted.endpoints
+    window.close()
+
+
+def test_dialog_starts_from_persisted_base_and_deliberate_apply_becomes_effective(
+    app, tmp_path, monkeypatch
+):
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+    persisted = AppSettings(dock_enabled=False)
+    store.save(persisted)
+    runtime = desktop_app.runtime_settings(persisted, demo=True, show=True)
+    deliberate = AppSettings(
+        dock_enabled=False,
+        endpoints=(EndpointConfig("127.0.0.1", 9100, "Chosen endpoint", "#ABCDEF"),),
+    )
+    seen = []
+
+    class AcceptedDialog:
+        def __init__(self, settings, parent):
+            seen.append(settings)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def result_settings(self):
+            return deliberate
+
+    monkeypatch.setattr("comfyui_progress_bridge.desktop.widgets.SettingsDialog", AcceptedDialog)
+    window = ProgressWindow(runtime, persisted_settings=persisted, store=store)
+    initialized_base = store.load()
+    window.open_settings()
+
+    assert seen == [initialized_base]
+    assert store.load() == deliberate
+    assert window.persisted_settings == deliberate
+    assert window.settings == deliberate
+    window.close()

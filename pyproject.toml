@@ -28,6 +28,10 @@ Issues = "https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.9"]
+desktop = ["PyQt6>=6.7"]
+
+[project.scripts]
+comfyui-progress-desktop = "comfyui_progress_bridge.desktop.app:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
