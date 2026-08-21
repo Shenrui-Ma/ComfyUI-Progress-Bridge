@@ -61,15 +61,15 @@ def test_only_authoritative_online_busy_to_empty_emits_once_per_busy_epoch():
     assert reducer.apply_snapshot(QueueSnapshot(ONE, True, ("a",), ())).transitions == ()
     drained = reducer.apply_snapshot(QueueSnapshot(ONE, True, (), ()))
     assert [item.kind for item in drained.transitions] == ["queue_completed"]
+    assert drained.transitions[0].busy_epoch == 1
     assert reducer.apply_snapshot(QueueSnapshot(ONE, True, (), ())).transitions == ()
 
     # A different endpoint and a new busy epoch are independent.
     reducer.apply_snapshot(QueueSnapshot(TWO, True, ("b",), ()))
     reducer.apply_snapshot(QueueSnapshot(ONE, True, (), ("c",)))
-    assert [
-        item.kind
-        for item in reducer.apply_snapshot(QueueSnapshot(ONE, True, (), ())).transitions
-    ] == ["queue_completed"]
+    second = reducer.apply_snapshot(QueueSnapshot(ONE, True, (), ()))
+    assert [item.kind for item in second.transitions] == ["queue_completed"]
+    assert second.transitions[0].busy_epoch == 2
     assert reducer.state.endpoints[TWO].busy is True
 
 

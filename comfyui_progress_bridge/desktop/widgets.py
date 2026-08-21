@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 from dataclasses import replace
 from datetime import datetime
 
@@ -50,8 +52,18 @@ from comfyui_progress_bridge.monitor.models import (
     TaskState,
 )
 
-from .i18n import LANGUAGES, Translator
-from .settings import AppSettings, EndpointConfig, SettingsStore, WindowPosition
+from .i18n import LANGUAGES, Translator, localized_result
+from .settings import (
+    AppSettings,
+    AudioConfig,
+    EndpointConfig,
+    NotificationConfig,
+    QQNotificationConfig,
+    SettingsStore,
+    TelegramNotificationConfig,
+    WeixinNotificationConfig,
+    WindowPosition,
+)
 
 THEMES = {
     "dark": ("#171A21", "#232733", "#F4F6FC", "#AAB1C3"),
@@ -287,12 +299,76 @@ class EndpointCard(QFrame):
         )
 
 
-class SettingsDialog(QDialog):
-    """Native settings editor, including endpoint and six avatar slots."""
+class _TestActionWorker:
+    """One reusable worker with a strict single-action capacity."""
 
-    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
+    def __init__(self, finished) -> None:
+        self._finished = finished
+        self._queue: queue.Queue = queue.Queue(maxsize=1)
+        self._lock = threading.Lock()
+        self._active = False
+        self._stopping = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="settings-test-worker", daemon=True)
+        self.thread.start()
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return self._active
+
+    def submit(self, action) -> bool:
+        with self._lock:
+            if self._active or self._stopping.is_set():
+                return False
+            self._active = True
+        self._queue.put_nowait(action)
+        return True
+
+    def _run(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                action = self._queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                result = action()
+            except Exception:
+                from .notifications import SafeResult
+
+                result = SafeResult(False, "network_error", "Test action failed")
+            finally:
+                self._queue.task_done()
+                with self._lock:
+                    self._active = False
+            if not self._stopping.is_set():
+                self._finished(result)
+
+    def shutdown(self, timeout: float = 0.25) -> bool:
+        self._stopping.set()
+        self.thread.join(max(0.0, timeout))
+        return not self.thread.is_alive()
+
+
+class SettingsDialog(QDialog):
+    """Native settings editor, including secure completion actions."""
+
+    test_finished = pyqtSignal(object)
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        parent: QWidget | None = None,
+        *,
+        notification_sender=None,
+        audio_player=None,
+    ) -> None:
         super().__init__(parent)
         self.original = settings
+        self.notification_sender = notification_sender
+        self.audio_player = audio_player
+        self.test_finished.connect(self._test_action_finished)
+        self._test_worker = _TestActionWorker(self.test_finished.emit)
+        self._test_worker_closed = False
         self.t = Translator(settings.language)
         self.setWindowTitle(self.t("settings"))
         self.resize(690, 520)
@@ -375,6 +451,90 @@ class SettingsDialog(QDialog):
             avatar_box.addLayout(column)
             self.avatar_edits.append(edit)
         root.addLayout(avatar_box)
+
+        completion_form = QFormLayout()
+        notification = settings.notifications
+        self.notifications_enabled = QCheckBox()
+        self.notifications_enabled.setChecked(notification.enabled)
+        self.env_file = QLineEdit(notification.env_file)
+        self.env_file.setEchoMode(QLineEdit.EchoMode.Password)
+        self.env_file.setAccessibleDescription(self.t("credential_file"))
+        self.timeout = QLineEdit(str(notification.timeout))
+        self.telegram_enabled = QCheckBox("Telegram")
+        self.telegram_enabled.setChecked(notification.telegram.enabled)
+        self.telegram_target = QLineEdit(notification.telegram.chat_id)
+        self.telegram_thread = QLineEdit(
+            "" if notification.telegram.thread_id is None else str(notification.telegram.thread_id)
+        )
+        self.weixin_enabled = QCheckBox("Weixin")
+        self.weixin_enabled.setChecked(notification.weixin.enabled)
+        self.weixin_account = QLineEdit(notification.weixin.account_id)
+        self.weixin_target = QLineEdit(notification.weixin.target)
+        self.weixin_context_store = QLineEdit(notification.weixin.context_store)
+        self.qq_enabled = QCheckBox("QQ")
+        self.qq_enabled.setChecked(notification.qq.enabled)
+        self.qq_target_type = QComboBox()
+        for target_type in ("c2c", "group", "channel"):
+            self.qq_target_type.addItem(target_type, target_type)
+        self.qq_target_type.setCurrentIndex(
+            self.qq_target_type.findData(notification.qq.target_type)
+        )
+        self.qq_target = QLineEdit(notification.qq.target)
+        completion_form.addRow(self.t("notifications_enabled"), self.notifications_enabled)
+        completion_form.addRow(self.t("credential_file"), self.env_file)
+        completion_form.addRow(self.t("timeout"), self.timeout)
+        completion_form.addRow("Telegram", self.telegram_enabled)
+        completion_form.addRow(self.t("telegram_target"), self.telegram_target)
+        completion_form.addRow(self.t("telegram_thread"), self.telegram_thread)
+        completion_form.addRow("Weixin", self.weixin_enabled)
+        completion_form.addRow(self.t("weixin_target"), self.weixin_target)
+        completion_form.addRow(self.t("weixin_account"), self.weixin_account)
+        completion_form.addRow(self.t("context_store"), self.weixin_context_store)
+        completion_form.addRow("QQ", self.qq_enabled)
+        completion_form.addRow(self.t("qq_target"), self.qq_target)
+        completion_form.addRow(self.t("qq_target_type"), self.qq_target_type)
+
+        credential_row = QHBoxLayout()
+        self.credential_state = QLabel(self.t("not_configured"))
+        self.credential_state.setObjectName("credentialState")
+        from .notifications import credential_source_state
+
+        source_state = credential_source_state(notification)
+        configured_platforms = [name for name, present in source_state.items() if present]
+        if configured_platforms:
+            self.credential_state.setText(
+                f"{self.t('configured')}: {', '.join(configured_platforms)}"
+            )
+        credential_row.addWidget(self.credential_state)
+        self.notification_test_buttons = {}
+        for platform in ("telegram", "weixin", "qq"):
+            button = QPushButton(f"{self.t('test_notification')} · {platform}")
+            button.clicked.connect(
+                lambda _checked=False, selected=platform: self._test_notification(selected)
+            )
+            credential_row.addWidget(button)
+            self.notification_test_buttons[platform] = button
+        completion_form.addRow(self.t("credential_state"), credential_row)
+
+        self.audio_enabled = QCheckBox()
+        self.audio_enabled.setChecked(settings.audio.enabled)
+        self.audio_mode = QComboBox()
+        for key, label in (
+            ("disabled", "audio_disabled"),
+            ("ding", "audio_ding"),
+            ("custom", "audio_custom"),
+        ):
+            self.audio_mode.addItem(self.t(label), key)
+        self.audio_mode.setCurrentIndex(self.audio_mode.findData(settings.audio.mode))
+        self.audio_path = QLineEdit(settings.audio.wav_path)
+        self.audio_test_button = QPushButton(self.t("test_audio"))
+        self.audio_test_button.clicked.connect(self._test_audio)
+        completion_form.addRow(self.t("audio_enabled"), self.audio_enabled)
+        completion_form.addRow(self.t("audio"), self.audio_mode)
+        completion_form.addRow(self.t("wav_file"), self.audio_path)
+        completion_form.addRow("", self.audio_test_button)
+        root.addLayout(completion_form)
+
         self.validation_label = QLabel("")
         self.validation_label.setObjectName("validationError")
         self.validation_label.setWordWrap(True)
@@ -392,6 +552,93 @@ class SettingsDialog(QDialog):
             self.reset_button.clicked.connect(parent.reset_position)
         buttons.addButton(self.reset_button, QDialogButtonBox.ButtonRole.ResetRole)
         root.addWidget(buttons)
+
+    def _set_test_controls_enabled(self, enabled: bool) -> None:
+        for button in self.notification_test_buttons.values():
+            button.setEnabled(enabled)
+        self.audio_test_button.setEnabled(enabled)
+
+    def _show_test_result(self, result) -> None:
+        ok = bool(getattr(result, "ok", False))
+        prefix = self.t("test_success" if ok else "test_failure")
+        code = str(getattr(result, "code", "api_error"))
+        detail = localized_result(self.original.language, code)
+        self.validation_label.setStyleSheet("color: #287a36;" if ok else "color: #d33;")
+        self.validation_label.setText(f"{prefix}: {detail}")
+
+    def _test_action_finished(self, result) -> None:
+        self._set_test_controls_enabled(True)
+        self._show_test_result(result)
+
+    def _busy_result(self) -> None:
+        from .notifications import SafeResult
+
+        self._show_test_result(SafeResult(False, "busy", "Test action is busy"))
+
+    def _test_notification(self, platform: str) -> None:
+        """Submit an explicit send to the dialog's sole bounded worker."""
+        if self._test_worker.active:
+            self._busy_result()
+            return
+        try:
+            candidate = self.result_settings()
+        except (AttributeError, TypeError, ValueError):
+            from .notifications import SafeResult
+
+            self._show_test_result(SafeResult(False, "invalid_settings", "Invalid settings"))
+            return
+
+        def run():
+            sender = self.notification_sender
+            if sender is None:
+                from .notifications import NotificationSender
+
+                sender = NotificationSender()
+            text = self.t("test_notification")
+            return sender.send_platform(platform, text, candidate)
+
+        if not self._test_worker.submit(run):
+            self._busy_result()
+            return
+        self._set_test_controls_enabled(False)
+
+    def _test_audio(self) -> None:
+        """Play non-blocking Qt audio only after this explicit action."""
+        if self._test_worker.active:
+            self._busy_result()
+            return
+        try:
+            config = AudioConfig(
+                enabled=self.audio_enabled.isChecked(),
+                mode=self.audio_mode.currentData(),
+                wav_path=self.audio_path.text().strip(),
+            )
+        except ValueError:
+            from .notifications import SafeResult
+
+            self._show_test_result(
+                SafeResult(False, "invalid_settings", "Invalid settings", "audio")
+            )
+            return
+        player = self.audio_player
+        if player is None:
+            from .audio import CompletionAudio
+
+            player = CompletionAudio()
+        self._show_test_result(player.play(config))
+
+    def _shutdown_test_worker(self) -> None:
+        if not self._test_worker_closed:
+            self._test_worker_closed = True
+            self._test_worker.shutdown(0.25)
+
+    def done(self, result: int) -> None:
+        self._shutdown_test_worker()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._shutdown_test_worker()
+        super().closeEvent(event)
 
     def _validate_and_accept(self) -> None:
         try:
@@ -412,6 +659,7 @@ class SettingsDialog(QDialog):
     def result_settings(self) -> AppSettings:
         endpoints = []
         for row in range(self.endpoint_table.rowCount()):
+
             def value(column: int, current_row: int = row) -> str:
                 item = self.endpoint_table.item(current_row, column)
                 return item.text().strip()
@@ -432,6 +680,33 @@ class SettingsDialog(QDialog):
                 )
             )
         paths = tuple(edit.text().strip() for edit in self.avatar_edits if edit.text().strip())
+        thread_text = self.telegram_thread.text().strip()
+        notification = NotificationConfig(
+            enabled=self.notifications_enabled.isChecked(),
+            env_file=self.env_file.text().strip(),
+            timeout=float(self.timeout.text().strip()),
+            telegram=TelegramNotificationConfig(
+                enabled=self.telegram_enabled.isChecked(),
+                chat_id=self.telegram_target.text().strip(),
+                thread_id=int(thread_text) if thread_text else None,
+            ),
+            weixin=WeixinNotificationConfig(
+                enabled=self.weixin_enabled.isChecked(),
+                account_id=self.weixin_account.text().strip(),
+                target=self.weixin_target.text().strip(),
+                context_store=self.weixin_context_store.text().strip(),
+            ),
+            qq=QQNotificationConfig(
+                enabled=self.qq_enabled.isChecked(),
+                target_type=self.qq_target_type.currentData(),
+                target=self.qq_target.text().strip(),
+            ),
+        )
+        audio = AudioConfig(
+            enabled=self.audio_enabled.isChecked(),
+            mode=self.audio_mode.currentData(),
+            wav_path=self.audio_path.text().strip(),
+        )
         return replace(
             self.original,
             language=self.language.currentData(),
@@ -442,6 +717,8 @@ class SettingsDialog(QDialog):
             avatar_enabled=self.avatar_enabled.isChecked(),
             endpoints=tuple(endpoints),
             avatar_paths=paths,
+            notifications=notification,
+            audio=audio,
         )
 
 
@@ -465,9 +742,7 @@ class ProgressWindow(QWidget):
         # Runtime settings may include process-local CLI substitutions (for
         # example --show or --demo). Never use them as the source of truth for
         # an implicit save: mutable UI state is merged into this persisted base.
-        self.persisted_settings = (
-            persisted_settings if persisted_settings is not None else settings
-        )
+        self.persisted_settings = persisted_settings if persisted_settings is not None else settings
         self.store = store or SettingsStore()
         self.translator = Translator(settings.language)
         # Launches always begin with the first configured expression. Only a
@@ -568,9 +843,11 @@ class ProgressWindow(QWidget):
         menu.addAction(self.quit_action)
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.activated.connect(
-            lambda reason: self.set_dock_enabled(True)
-            if reason == QSystemTrayIcon.ActivationReason.Trigger
-            else None
+            lambda reason: (
+                self.set_dock_enabled(True)
+                if reason == QSystemTrayIcon.ActivationReason.Trigger
+                else None
+            )
         )
         self.tray_icon.show()
 

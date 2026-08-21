@@ -27,6 +27,8 @@ from comfyui_progress_bridge.monitor.models import (
 from comfyui_progress_bridge.monitor.reducer import MonitorReducer
 from comfyui_progress_bridge.monitor.source import LocalSource, SSHSource, redact_error
 
+from .audio import CompletionAudio
+from .notifications import CompletionDispatcher, NotificationSender
 from .settings import AppSettings, EndpointConfig, SettingsStore
 from .widgets import ProgressWindow
 
@@ -49,15 +51,14 @@ def model_from_record(record: dict[str, Any]) -> QueueSnapshot | EventEnvelope |
     if record.get("kind") not in {"snapshot", "event"}:
         return None
     endpoint_data = record["endpoint"]
-    endpoint = EndpointId(
-        endpoint_data["host"], endpoint_data["port"], UUID(record["instance_id"])
-    )
+    endpoint = EndpointId(endpoint_data["host"], endpoint_data["port"], UUID(record["instance_id"]))
     if record["kind"] == "snapshot":
         return QueueSnapshot(
             endpoint,
             record["online"],
             tuple(record["running_prompt_ids"]),
             tuple(record["pending_prompt_ids"]),
+            record["observed_at"],
         )
     return EventEnvelope(
         endpoint,
@@ -74,13 +75,22 @@ class DesktopMonitor(QObject):
     record_received = pyqtSignal(object)
     error_received = pyqtSignal(object)
 
-    def __init__(self, window: ProgressWindow, settings: AppSettings) -> None:
+    def __init__(
+        self,
+        window: ProgressWindow,
+        settings: AppSettings,
+        *,
+        dispatcher: Any | None = None,
+    ) -> None:
         super().__init__(window)
         self.window = window
         self.settings = settings
         self.reducer = MonitorReducer(terminal_retention=30.0)
         self.sources: list[LocalSource] = []
         self.errors: list[str] = []
+        self.dispatcher = dispatcher or CompletionDispatcher(
+            NotificationSender(), settings, audio=CompletionAudio()
+        )
         self._generation = 0
         self.record_received.connect(self._consume_queued_record)
         self.error_received.connect(self._display_error)
@@ -94,9 +104,14 @@ class DesktopMonitor(QObject):
             return
         model = model_from_record(record)
         if isinstance(model, QueueSnapshot):
-            self.window.render(self.reducer.apply_snapshot(model))
+            self._render(self.reducer.apply_snapshot(model))
         elif isinstance(model, EventEnvelope):
-            self.window.render(self.reducer.apply_event(model))
+            self._render(self.reducer.apply_event(model))
+
+    def _render(self, reduction: Reduction) -> None:
+        self.window.render(reduction)
+        names = {(item.host, item.port): item.name for item in self.settings.endpoints}
+        self.dispatcher.dispatch(reduction, names)
 
     def _consume_queued_record(self, payload: object) -> None:
         if not isinstance(payload, tuple) or len(payload) != 2:
@@ -106,7 +121,7 @@ class DesktopMonitor(QObject):
             self.consume_record(record)
 
     def expire(self) -> None:
-        self.window.render(self.reducer.expire())
+        self._render(self.reducer.expire())
 
     def _error(self, message: str) -> None:
         self.error_received.emit((self._generation, redact_error(message)))
@@ -135,6 +150,7 @@ class DesktopMonitor(QObject):
             return
         self.stop()
         self.settings = settings
+        self.dispatcher.update_settings(settings)
         self.reducer = MonitorReducer(terminal_retention=30.0)
         self.window.render(Reduction(MonitorState()))
         self.start()
@@ -171,12 +187,8 @@ class DesktopMonitor(QObject):
                         "comfyui_progress_bridge.monitor.remote_probe",
                         *targets,
                     ],
-                    on_record=lambda record, token=generation: self._record_callback(
-                        token, record
-                    ),
-                    on_error=lambda message, token=generation: self._error_callback(
-                        token, message
-                    ),
+                    on_record=lambda record, token=generation: self._record_callback(token, record),
+                    on_error=lambda message, token=generation: self._error_callback(token, message),
                 )
             )
 
@@ -195,12 +207,8 @@ class DesktopMonitor(QObject):
                     user=first.ssh_user,
                     remote_argv=[first.ssh_remote_python, *probe, *targets],
                     identity_file=first.ssh_identity_file or None,
-                    on_record=lambda record, token=generation: self._record_callback(
-                        token, record
-                    ),
-                    on_error=lambda message, token=generation: self._error_callback(
-                        token, message
-                    ),
+                    on_record=lambda record, token=generation: self._record_callback(token, record),
+                    on_error=lambda message, token=generation: self._error_callback(token, message),
                 )
             )
 
@@ -216,6 +224,11 @@ class DesktopMonitor(QObject):
             join = getattr(source, "join", None)
             if callable(join):
                 join(timeout=2)
+
+    def shutdown(self) -> None:
+        """Stop probes and the bounded notification worker for application exit."""
+        self.stop()
+        self.dispatcher.shutdown()
 
 
 def demo_reduction(step: int = 0) -> Reduction:
@@ -299,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         timer.start(1000)
     else:
         monitor = DesktopMonitor(window, settings)
-        application.aboutToQuit.connect(monitor.stop)
+        application.aboutToQuit.connect(monitor.shutdown)
         monitor.start()
     return application.exec()
 

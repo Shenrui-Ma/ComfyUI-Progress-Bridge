@@ -15,11 +15,13 @@ from typing import Any
 
 from comfyui_progress_bridge.monitor.source import build_ssh_argv
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_SETTINGS_BYTES = 1_048_576
 LANGUAGES = frozenset({"zh-CN", "ja-JP", "en-US", "ko-KR"})
 THEMES = frozenset({"dark", "light", "system"})
 MODES = frozenset({"simple", "professional"})
+AUDIO_MODES = frozenset({"disabled", "ding", "custom"})
+QQ_TARGET_TYPES = frozenset({"c2c", "group", "channel"})
 
 
 class UnsafeSettingsPath(ValueError):
@@ -152,6 +154,95 @@ class WindowPosition:
 
 
 @dataclass(frozen=True)
+class TelegramNotificationConfig:
+    enabled: bool = False
+    chat_id: str = ""
+    thread_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("telegram enabled must be a bool")
+        _text(self.chat_id, "Telegram chat ID", required=False)
+        if self.thread_id is not None and (
+            isinstance(self.thread_id, bool)
+            or not isinstance(self.thread_id, int)
+            or self.thread_id <= 0
+        ):
+            raise ValueError("Telegram thread ID must be a positive integer")
+
+
+@dataclass(frozen=True)
+class WeixinNotificationConfig:
+    enabled: bool = False
+    account_id: str = ""
+    target: str = ""
+    context_store: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("Weixin enabled must be a bool")
+        for value, name in (
+            (self.account_id, "Weixin account ID"),
+            (self.target, "Weixin target"),
+            (self.context_store, "Weixin context store"),
+        ):
+            _text(value, name, required=False)
+
+
+@dataclass(frozen=True)
+class QQNotificationConfig:
+    enabled: bool = False
+    target_type: str = "c2c"
+    target: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("QQ enabled must be a bool")
+        if self.target_type not in QQ_TARGET_TYPES:
+            raise ValueError("QQ target type must be c2c, group, or channel")
+        _text(self.target, "QQ target", required=False)
+
+
+@dataclass(frozen=True)
+class NotificationConfig:
+    enabled: bool = False
+    env_file: str = "~/.hermes/.env"
+    timeout: float = 10.0
+    telegram: TelegramNotificationConfig = field(default_factory=TelegramNotificationConfig)
+    weixin: WeixinNotificationConfig = field(default_factory=WeixinNotificationConfig)
+    qq: QQNotificationConfig = field(default_factory=QQNotificationConfig)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("notifications enabled must be a bool")
+        _text(self.env_file, "credential environment file", required=False)
+        if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)):
+            raise ValueError("notification timeout must be a number")
+        if not 1 <= self.timeout <= 30:
+            raise ValueError("notification timeout must be between 1 and 30 seconds")
+        if not isinstance(self.telegram, TelegramNotificationConfig):
+            raise ValueError("telegram must be TelegramNotificationConfig")
+        if not isinstance(self.weixin, WeixinNotificationConfig):
+            raise ValueError("weixin must be WeixinNotificationConfig")
+        if not isinstance(self.qq, QQNotificationConfig):
+            raise ValueError("qq must be QQNotificationConfig")
+
+
+@dataclass(frozen=True)
+class AudioConfig:
+    enabled: bool = False
+    mode: str = "disabled"
+    wav_path: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("audio enabled must be a bool")
+        if self.mode not in AUDIO_MODES:
+            raise ValueError("audio mode must be disabled, ding, or custom")
+        _text(self.wav_path, "custom WAV path", required=False)
+
+
+@dataclass(frozen=True)
 class AppSettings:
     schema_version: int = SCHEMA_VERSION
     language: str = "en-US"
@@ -164,6 +255,8 @@ class AppSettings:
     endpoints: tuple[EndpointConfig, ...] = field(default_factory=lambda: (EndpointConfig(),))
     avatar_enabled: bool = False
     avatar_paths: tuple[str, ...] = ()
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    audio: AudioConfig = field(default_factory=AudioConfig)
 
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
@@ -202,6 +295,10 @@ class AppSettings:
             _text(path, "avatar path")
             if Path(path).suffix.casefold() != ".png":
                 raise ValueError("avatar files must be PNGs")
+        if not isinstance(self.notifications, NotificationConfig):
+            raise ValueError("notifications must be NotificationConfig")
+        if not isinstance(self.audio, AudioConfig):
+            raise ValueError("audio must be AudioConfig")
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> AppSettings:
@@ -230,6 +327,27 @@ class AppSettings:
             if not isinstance(avatars, list):
                 raise ValueError("avatar_paths must be a list")
             data["avatar_paths"] = tuple(avatars)
+        notifications = data.get("notifications")
+        if notifications is not None:
+            if not isinstance(notifications, dict):
+                raise ValueError("notifications must be an object")
+            notification_data = dict(notifications)
+            for key, config_type in (
+                ("telegram", TelegramNotificationConfig),
+                ("weixin", WeixinNotificationConfig),
+                ("qq", QQNotificationConfig),
+            ):
+                value = notification_data.get(key)
+                if value is not None:
+                    if not isinstance(value, dict):
+                        raise ValueError(f"notifications.{key} must be an object")
+                    notification_data[key] = config_type(**value)
+            data["notifications"] = NotificationConfig(**notification_data)
+        audio = data.get("audio")
+        if audio is not None:
+            if not isinstance(audio, dict):
+                raise ValueError("audio must be an object")
+            data["audio"] = AudioConfig(**audio)
         return cls(**data)
 
 
@@ -290,6 +408,12 @@ class SettingsStore:
         version = raw.get("schema_version")
         if version == SCHEMA_VERSION:
             return raw, False
+        if version == 2:
+            migrated = dict(raw)
+            migrated["schema_version"] = SCHEMA_VERSION
+            migrated.setdefault("notifications", asdict(NotificationConfig()))
+            migrated.setdefault("audio", asdict(AudioConfig()))
+            return migrated, True
         if version != 1:
             raise ValueError("unsupported settings schema")
         hosts = raw.get("hosts", [])
@@ -319,6 +443,8 @@ class SettingsStore:
             "mode": "simple" if raw.get("simple", False) else "professional",
             "opacity": round(raw.get("alpha", 0.92) * 100),
             "endpoints": endpoints or [asdict(EndpointConfig())],
+            "notifications": asdict(NotificationConfig()),
+            "audio": asdict(AudioConfig()),
         }
         return migrated, True
 

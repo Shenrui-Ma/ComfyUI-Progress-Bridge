@@ -119,13 +119,14 @@ def _accept_snapshot_generation(
     tasks: dict[TaskKey, TaskState],
     sequences: dict[EndpointId, int],
     tombstones: dict[TaskKey, int],
+    observed_at: float | None,
 ) -> tuple[Transition, ...]:
     """An authoritative snapshot is the sole arbiter of generation replacement."""
     current = _current_endpoint(endpoint, endpoints)
     if current is None or current == endpoint:
         return ()
     _discard_generation(current, endpoints, tasks, sequences, tombstones)
-    return (Transition("instance_replaced", endpoint),)
+    return (Transition("instance_replaced", endpoint, observed_at=observed_at),)
 
 
 def _expire_parts(
@@ -182,14 +183,22 @@ def reduce_snapshot(
 
     transitions.extend(
         _accept_snapshot_generation(
-            snapshot.endpoint, endpoints, tasks, sequences, tombstones
+            snapshot.endpoint, endpoints, tasks, sequences, tombstones, snapshot.observed_at
         )
     )
     previous = endpoints.get(snapshot.endpoint, EndpointState(snapshot.endpoint))
 
     busy = snapshot.busy
+    busy_epoch = previous.busy_epoch + int(busy and not previous.busy)
     if previous.busy and not busy:
-        transitions.append(Transition("queue_completed", snapshot.endpoint))
+        transitions.append(
+            Transition(
+                "queue_completed",
+                snapshot.endpoint,
+                observed_at=snapshot.observed_at,
+                busy_epoch=previous.busy_epoch,
+            )
+        )
 
     running = set(snapshot.running_prompt_ids)
     pending = set(snapshot.pending_prompt_ids)
@@ -200,6 +209,7 @@ def reduce_snapshot(
         busy=busy,
         active_prompt_ids=present,
         require_snapshot_for_unknown_nonterminal=False,
+        busy_epoch=busy_epoch,
     )
 
     # The snapshot reconciles every pre-snapshot terminal. An active prompt with

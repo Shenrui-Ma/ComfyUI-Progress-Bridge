@@ -93,6 +93,7 @@ class QueueSnapshot:
     online: bool
     running_prompt_ids: tuple[str, ...] = ()
     pending_prompt_ids: tuple[str, ...] = ()
+    observed_at: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.endpoint, EndpointId):
@@ -107,6 +108,8 @@ class QueueSnapshot:
                 raise ValueError(f"{name} must be a tuple")
             for prompt_id in prompt_ids:
                 _bounded_string(prompt_id, "prompt_id", maximum=MAX_PROMPT_ID_LENGTH)
+        if self.observed_at is not None:
+            _finite_number(self.observed_at, "observed_at")
 
     @classmethod
     def offline(cls, endpoint: EndpointId) -> QueueSnapshot:
@@ -142,6 +145,8 @@ class EndpointState:
     # None means no authoritative online queue snapshot has been observed yet.
     active_prompt_ids: frozenset[str] | None = None
     require_snapshot_for_unknown_nonterminal: bool = False
+    # Monotonic within one endpoint process generation. The reducer owns epochs.
+    busy_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -178,6 +183,8 @@ class Transition:
     kind: str
     endpoint: EndpointId
     task: TaskKey | None = None
+    observed_at: float | None = None
+    busy_epoch: int | None = None
 
 
 @dataclass(frozen=True)

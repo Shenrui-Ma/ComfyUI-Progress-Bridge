@@ -6,8 +6,13 @@ import pytest
 
 from comfyui_progress_bridge.desktop.settings import (
     AppSettings,
+    AudioConfig,
     EndpointConfig,
+    NotificationConfig,
+    QQNotificationConfig,
     SettingsStore,
+    TelegramNotificationConfig,
+    WeixinNotificationConfig,
 )
 
 
@@ -34,6 +39,22 @@ def test_secure_atomic_round_trip_and_unique_endpoints(tmp_path):
     assert SettingsStore(path).load() == settings
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert not list(path.parent.glob("*.tmp"))
+
+    completion_settings = AppSettings(
+        notifications=NotificationConfig(
+            enabled=True,
+            env_file="/private/credentials.env",
+            timeout=3,
+            telegram=TelegramNotificationConfig(True, "chat", 7),
+            weixin=WeixinNotificationConfig(True, "account", "peer", "/private/context"),
+            qq=QQNotificationConfig(True, "channel", "channel-id"),
+        ),
+        audio=AudioConfig(True, "custom", "/private/done.wav"),
+    )
+    SettingsStore(path).save(completion_settings)
+    assert SettingsStore(path).load() == completion_settings
+    serialized = path.read_text(encoding="utf-8")
+    assert "BOT_TOKEN" not in serialized and "CLIENT_SECRET" not in serialized
 
     with pytest.raises(ValueError, match="host and port"):
         AppSettings(
@@ -69,7 +90,7 @@ def test_invalid_config_recovers_defaults_and_quarantines_file(tmp_path):
     loaded = SettingsStore(path).load()
     assert loaded == AppSettings()
     assert list(tmp_path.glob("settings.json.invalid-*"))
-    assert json.loads(path.read_text())["schema_version"] == 2
+    assert json.loads(path.read_text())["schema_version"] == 3
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -108,7 +129,7 @@ def test_schema_one_migration_and_override_directory(tmp_path, monkeypatch):
     assert loaded.mode == "simple"
     assert loaded.endpoints[0].name == "Local"
     assert loaded.endpoints[0].host == "127.0.0.1"
-    assert json.loads(path.read_text())["schema_version"] == 2
+    assert json.loads(path.read_text())["schema_version"] == 3
 
 
 @pytest.mark.parametrize(
