@@ -4,25 +4,26 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import socket
 
 
-def bridge_port(comfy_port: int) -> int:
-    return 30000 + (comfy_port % 1000)
+def accepts_event(event: object) -> bool:
+    """Return whether a decoded JSON value is a schema-v2 event object."""
+    return isinstance(event, dict) and event.get("schema") == 2
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int)
-    parser.add_argument("--comfy-port", type=int, default=8188)
+    parser.add_argument("--port", type=int, default=30999)
     args = parser.parse_args()
-    port = args.port if args.port is not None else bridge_port(args.comfy_port)
+    host = str(ipaddress.IPv4Address(args.host))
 
     receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    receiver.bind((args.host, port))
-    print(json.dumps({"listening": f"udp://{args.host}:{port}"}), flush=True)
+    receiver.bind((host, args.port))
+    print(json.dumps({"listening": f"udp://{host}:{args.port}", "schema": 2}), flush=True)
 
     while True:
         payload, _ = receiver.recvfrom(65535)
@@ -30,7 +31,8 @@ def main() -> None:
             event = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             continue
-        print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+        if accepts_event(event):
+            print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ ComfyUI PromptServer.send_sync
 
 ## Features
 
-- Mirrors `executing`, `progress`, `execution_error`, and `execution_interrupted`
+- Mirrors `executing`, `progress`, `execution_error`, `execution_interrupted`, and `execution_success`
 - Preserves the original `PromptServer.send_sync` return value and client routing
 - Sends only a compact allowlist of useful fields
 - Uses loopback by default; no network service is exposed
@@ -36,10 +36,12 @@ git clone https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge.git
 Restart that ComfyUI instance. Its startup log should include, for example:
 
 ```text
-[ComfyUI Progress Bridge] UDP 127.0.0.1:30189
+[ComfyUI Progress Bridge] schema 2 UDP 127.0.0.1:30999
 ```
 
-For ComfyUI on port `8189`, the default bridge port is `30189`. For port `8202`, it is `30202`.
+Every ComfyUI process sends to the shared loopback listener on UDP port `30999`.
+The schema-v2 envelope carries the exact ComfyUI HTTP port and a process instance UUID,
+so ports such as `8189` and `9189` and identical prompt IDs cannot collide.
 
 > Each running ComfyUI process must be restarted once after installation. Wait for `running=0` and `pending=0` before restarting a production instance.
 
@@ -48,15 +50,14 @@ For ComfyUI on port `8189`, the default bridge port is `30189`. For port `8202`,
 Run the included receiver:
 
 ```bash
-python examples/receive_progress.py --comfy-port 8189
+python examples/receive_progress.py
 ```
 
 Then submit a normal ComfyUI workflow. The receiver prints newline-delimited JSON such as:
 
 ```json
-{"type":"executing","data":{"prompt_id":"abc","node":"4"}}
-{"type":"progress","data":{"prompt_id":"abc","node":"24","value":9,"max":12}}
-{"type":"executing","data":{"prompt_id":"abc","node":"27"}}
+{"schema":2,"endpoint":{"host":"127.0.0.1","port":8189},"instance_id":"70f12e92-a03d-4770-b080-1f90c9f1ed88","sequence":1,"observed_at":1787414400.0,"type":"executing","data":{"prompt_id":"abc","node":"4"}}
+{"schema":2,"endpoint":{"host":"127.0.0.1","port":8189},"instance_id":"70f12e92-a03d-4770-b080-1f90c9f1ed88","sequence":2,"observed_at":1787414400.1,"type":"progress","data":{"prompt_id":"abc","node":"24","value":9,"max":12}}
 ```
 
 An external monitor can join `prompt_id` and `node` with the workflow graph returned by ComfyUI's `/queue` endpoint to display friendly stages such as model loading, sampling, VAE decode, and saving.
@@ -66,13 +67,13 @@ An external monitor can join `prompt_id` and `node` with the workflow graph retu
 Environment variables must be set before starting ComfyUI:
 
 - `COMFY_PROGRESS_BRIDGE_HOST`: numeric IPv4 UDP destination, default `127.0.0.1` (hostnames are rejected to prevent DNS work on the event path)
-- `COMFY_PROGRESS_BRIDGE_PORT`: explicit UDP destination port
+- `COMFY_PROGRESS_BRIDGE_PORT`: explicit UDP destination port, default `30999`
+- `COMFY_PROGRESS_BRIDGE_ENDPOINT_HOST`: numeric IPv4 host recorded in `endpoint.host`, default `127.0.0.1`
 
-If no explicit port is set, the extension calculates:
-
-```text
-30000 + (ComfyUI HTTP port % 1000)
-```
+Older releases derived a separate UDP port from each HTTP port. Schema v2 intentionally
+replaces that behavior with one shared listener. Existing deployments that require a fixed
+legacy destination can set `COMFY_PROGRESS_BRIDGE_PORT` explicitly, but receivers must read
+the schema-v2 envelope.
 
 Example:
 
@@ -88,6 +89,7 @@ Only these event types are mirrored:
 - `progress`
 - `execution_error`
 - `execution_interrupted`
+- `execution_success`
 
 Only these data fields are eligible for forwarding:
 
@@ -97,6 +99,8 @@ Only these data fields are eligible for forwarding:
 - `exception_message`, `node_type`
 
 Binary previews, workflow inputs, prompts, model names, images, and generated media are not forwarded.
+Each datagram is capped at 8192 bytes. `prompt_id` is limited to 256 characters, ordinary
+forwarded strings to 1024 characters, and error text to 4096 characters.
 
 ## Security and compatibility
 

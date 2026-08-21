@@ -1,8 +1,11 @@
 import json
+import math
 import runpy
 import sys
+import threading
 import types
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -18,6 +21,10 @@ class FakeSocket:
     def __init__(self, fail=False):
         self.fail = fail
         self.sent = []
+        self.blocking = None
+
+    def setblocking(self, blocking):
+        self.blocking = blocking
 
     def sendto(self, payload, target):
         if self.fail:
@@ -34,12 +41,17 @@ class FakePromptServer:
 
 
 def test_bridge_port_is_stable_for_a_comfyui_port():
-    assert bridge_port(8189) == 30189
-    assert bridge_port(8202) == 30202
+    assert bridge_port(8189) == 30999
+    assert bridge_port(9189) == 30999
+
+
+def test_bridge_port_warns_when_ignored_base_port_is_supplied():
+    with pytest.warns(DeprecationWarning, match="base_port"):
+        assert bridge_port(8189, 40000) == 30999
 
 
 def test_resolve_target_defaults_to_loopback_and_allows_port_override():
-    assert resolve_target(8189, {}) == ("127.0.0.1", 30189)
+    assert resolve_target(8189, {}) == ("127.0.0.1", 30999)
     assert resolve_target(8189, {"COMFY_PROGRESS_BRIDGE_PORT": "41000"}) == (
         "127.0.0.1",
         41000,
@@ -68,10 +80,53 @@ def test_compact_event_keeps_only_monitor_fields():
             "large_internal_value": "do not forward",
         },
     )
-    assert json.loads(payload) == {
-        "type": "progress",
-        "data": {"prompt_id": "abc", "node": "7", "value": 3, "max": 10},
+    decoded = json.loads(payload)
+    assert decoded["type"] == "progress"
+    assert decoded["data"] == {
+        "prompt_id": "abc",
+        "node": "7",
+        "value": 3,
+        "max": 10,
     }
+    assert decoded["schema"] == 2
+
+
+def test_two_http_ports_share_target_but_have_collision_free_envelopes():
+    first = FakeSocket()
+    second = FakeSocket()
+
+    class FirstServer(FakePromptServer):
+        pass
+
+    class SecondServer(FakePromptServer):
+        pass
+
+    assert install_bridge(
+        FirstServer,
+        8189,
+        udp_socket=first,
+        instance_id="00000000-0000-0000-0000-000000000001",
+    ) is True
+    assert install_bridge(
+        SecondServer,
+        9189,
+        udp_socket=second,
+        instance_id="00000000-0000-0000-0000-000000000002",
+    ) is True
+    FirstServer().send_sync("executing", {"prompt_id": "same", "node": "1"})
+    FirstServer().send_sync("progress", {"prompt_id": "same", "node": "1", "value": 1})
+    SecondServer().send_sync("execution_success", {"prompt_id": "same"})
+
+    one, one_next = (json.loads(item[0]) for item in first.sent)
+    two = json.loads(second.sent[0][0])
+    assert first.sent[0][1] == second.sent[0][1] == ("127.0.0.1", 30999)
+    assert one["schema"] == two["schema"] == 2
+    assert one["endpoint"] == {"host": "127.0.0.1", "port": 8189}
+    assert two["endpoint"] == {"host": "127.0.0.1", "port": 9189}
+    assert UUID(one["instance_id"]) != UUID(two["instance_id"])
+    assert one_next["sequence"] == one["sequence"] + 1
+    assert isinstance(one["observed_at"], float)
+    assert two["type"] == "execution_success"
 
 
 def test_compact_event_bounds_long_error_messages_for_udp():
@@ -106,9 +161,51 @@ def test_compact_event_drops_an_unreasonably_long_prompt_id():
     assert compact_event("executing", {"prompt_id": "p" * 257, "node": "7"}) is None
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("node", 7),
+        ("node_id", ["7"]),
+        ("display_node", {"name": "7"}),
+        ("node_type", object()),
+        ("exception_message", RuntimeError("bad")),
+        ("value", True),
+        ("max", False),
+        ("value", [1]),
+        ("max", object()),
+        ("value", math.nan),
+        ("max", math.inf),
+    ],
+)
+def test_compact_event_omits_fields_with_invalid_schema_types(field, value):
+    payload = compact_event("progress", {"prompt_id": "abc", field: value})
+    assert payload is not None
+    assert field not in json.loads(payload)["data"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"endpoint_port": 0},
+        {"endpoint_port": True},
+        {"sequence": -1},
+        {"sequence": True},
+        {"instance_id": "not-a-uuid"},
+        {"observed_at": math.nan},
+        {"observed_at": True},
+    ],
+)
+def test_compact_event_rejects_invalid_envelope_fields(kwargs):
+    assert compact_event("executing", {"prompt_id": "abc"}, **kwargs) is None
+
+
 def test_compact_event_ignores_unsupported_or_unscoped_events():
     assert compact_event("status", {"prompt_id": "abc"}) is None
     assert compact_event("progress", {"node": "7", "value": 1, "max": 2}) is None
+
+
+def test_compact_event_safely_rejects_an_unhashable_event_type():
+    assert compact_event([], {"prompt_id": "abc"}) is None
 
 
 def test_install_bridge_preserves_original_delivery_and_mirrors_event():
@@ -126,8 +223,27 @@ def test_install_bridge_preserves_original_delivery_and_mirrors_event():
     assert result == "original-result"
     assert FakePromptServer.calls[-1][2] == "frontend-client"
     payload, target = sock.sent[-1]
-    assert target == ("127.0.0.1", 30189)
+    assert target == ("127.0.0.1", 30999)
     assert json.loads(payload)["data"]["value"] == 3
+    assert sock.blocking is False
+
+
+def test_install_bridge_calls_original_before_best_effort_mirror():
+    order = []
+
+    class OrderedSocket(FakeSocket):
+        def sendto(self, payload, target):
+            order.append("mirror")
+            super().sendto(payload, target)
+
+    class Server:
+        def send_sync(self, event, data, sid=None):
+            order.append("original")
+            return "delivered"
+
+    install_bridge(Server, 8189, udp_socket=OrderedSocket())
+    assert Server().send_sync("executing", {"prompt_id": "abc"}) == "delivered"
+    assert order == ["original", "mirror"]
 
 
 def test_install_bridge_is_idempotent():
@@ -194,3 +310,50 @@ def test_monitor_failure_never_breaks_comfyui_delivery():
         Server().send_sync("executing", {"prompt_id": "abc", "node": "4"})
         == "still-delivered"
     )
+
+
+def test_concurrent_mirrors_serialize_sequence_construction_and_send():
+    first_in_send = threading.Event()
+    release_first = threading.Event()
+    second_sent = threading.Event()
+
+    class CoordinatedSocket(FakeSocket):
+        def sendto(self, payload, target):
+            sequence = json.loads(payload)["sequence"]
+            if sequence == 1:
+                first_in_send.set()
+                assert release_first.wait(2)
+            else:
+                second_sent.set()
+            self.sent.append((payload, target))
+
+    class Server:
+        def send_sync(self, event, data, sid=None):
+            return "delivered"
+
+    sock = CoordinatedSocket()
+    install_bridge(Server, 8189, udp_socket=sock)
+    first = threading.Thread(
+        target=Server().send_sync, args=("progress", {"prompt_id": "a", "value": 1})
+    )
+    second = threading.Thread(
+        target=Server().send_sync, args=("progress", {"prompt_id": "b", "value": 2})
+    )
+    first.start()
+    assert first_in_send.wait(2)
+    second.start()
+    assert not second_sent.wait(0.1)
+    release_first.set()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert [json.loads(payload)["sequence"] for payload, _ in sock.sent] == [1, 2]
+
+
+def test_example_receiver_ignores_valid_non_object_json():
+    namespace = runpy.run_path(str(Path(__file__).parents[1] / "examples/receive_progress.py"))
+    accepts_event = namespace["accepts_event"]
+    assert accepts_event([{"schema": 2}]) is False
+    assert accepts_event(None) is False
+    assert accepts_event({"schema": 2}) is True

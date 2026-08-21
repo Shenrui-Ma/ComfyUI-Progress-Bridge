@@ -23,7 +23,7 @@ def install_comfyui_bridge() -> bool:
         installed = install_bridge(PromptServer, comfy_port)
         if installed:
             host, port = resolve_target(comfy_port)
-            print(f"[ComfyUI Progress Bridge] UDP {host}:{port}")
+            print(f"[ComfyUI Progress Bridge] schema 2 UDP {host}:{port}")
         return installed
     except Exception as exc:
         # A monitoring extension must not prevent ComfyUI from starting.
