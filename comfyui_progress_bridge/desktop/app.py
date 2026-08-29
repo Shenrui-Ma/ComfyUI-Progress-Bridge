@@ -33,6 +33,23 @@ from .settings import AppSettings, EndpointConfig, SettingsStore
 from .widgets import ProgressWindow
 
 
+def classify_source_error(message: str) -> str:
+    """Map probe diagnostics to a short, non-sensitive localized status key."""
+    normalized = message.casefold()
+    if "incompatible probe protocol" in normalized:
+        return "source_protocol"
+    if any(
+        marker in normalized
+        for marker in ("permission denied", "authentication failed", "publickey")
+    ):
+        return "source_auth"
+    if "connection refused" in normalized:
+        return "source_refused"
+    if any(marker in normalized for marker in ("timed out", "timeout", "not responding")):
+        return "source_timeout"
+    return "source_unavailable"
+
+
 def demo_settings(base: AppSettings | None = None) -> AppSettings:
     """Return stable multi-port settings suitable for screenshots and inspection."""
     source = base or AppSettings()
@@ -88,6 +105,7 @@ class DesktopMonitor(QObject):
         self.reducer = MonitorReducer(terminal_retention=30.0)
         self.sources: list[LocalSource] = []
         self.errors: list[str] = []
+        self._source_errors: dict[object, str] = {}
         self.dispatcher = dispatcher or CompletionDispatcher(
             NotificationSender(), settings, audio=CompletionAudio()
         )
@@ -99,14 +117,30 @@ class DesktopMonitor(QObject):
         self.expiry_timer.timeout.connect(self.expire)
         self.expiry_timer.start(1000)
 
-    def consume_record(self, record: object) -> None:
+    def consume_record(self, record: object, source_key: object = None) -> None:
         if not isinstance(record, dict):
             return
         model = model_from_record(record)
         if isinstance(model, QueueSnapshot):
-            self._render(self.reducer.apply_snapshot(model))
+            reduction = self.reducer.apply_snapshot(model)
+            if reduction.accepted is True:
+                self._mark_source_recovered(source_key)
+            self._render(reduction)
         elif isinstance(model, EventEnvelope):
-            self._render(self.reducer.apply_event(model))
+            reduction = self.reducer.apply_event(model)
+            if reduction.accepted is True:
+                self._mark_source_recovered(source_key)
+            self._render(reduction)
+
+    def _mark_source_recovered(self, source_key: object) -> None:
+        """Clear only the recovering source; preserve errors from other probes."""
+        if source_key not in self._source_errors:
+            return
+        self._source_errors.pop(source_key)
+        if self._source_errors:
+            self.window.show_source_error(next(reversed(self._source_errors.values())))
+        else:
+            self.window.clear_source_error()
 
     def _render(self, reduction: Reduction) -> None:
         self.window.render(reduction)
@@ -114,35 +148,47 @@ class DesktopMonitor(QObject):
         self.dispatcher.dispatch(reduction, names)
 
     def _consume_queued_record(self, payload: object) -> None:
-        if not isinstance(payload, tuple) or len(payload) != 2:
+        if not isinstance(payload, tuple) or len(payload) not in {2, 3}:
             return
-        generation, record = payload
+        if len(payload) == 2:
+            generation, record = payload
+            source_key = None
+        else:
+            generation, source_key, record = payload
         if generation == self._generation:
-            self.consume_record(record)
+            self.consume_record(record, source_key)
 
     def expire(self) -> None:
         self._render(self.reducer.expire())
 
     def _error(self, message: str) -> None:
-        self.error_received.emit((self._generation, redact_error(message)))
+        self.error_received.emit((self._generation, None, redact_error(message)))
 
     def _display_error(self, payload: object) -> None:
-        if not isinstance(payload, tuple) or len(payload) != 2:
+        if not isinstance(payload, tuple) or len(payload) not in {2, 3}:
             return
-        generation, message = payload
+        if len(payload) == 2:
+            generation, message = payload
+            source_key = None
+        else:
+            generation, source_key, message = payload
         if generation != self._generation:
             return
         clean = redact_error(message)
         self.errors.append(clean)
         del self.errors[:-20]
         logging.getLogger(__name__).error("probe source: %s", clean)
-        self.window.show_source_error(clean)
+        self._source_errors.pop(source_key, None)
+        self._source_errors[source_key] = classify_source_error(clean)
+        self.window.show_source_error(self._source_errors[source_key])
 
-    def _record_callback(self, generation: int, record: dict[str, Any]) -> None:
-        self.record_received.emit((generation, record))
+    def _record_callback(
+        self, generation: int, source_key: object, record: dict[str, Any]
+    ) -> None:
+        self.record_received.emit((generation, source_key, record))
 
-    def _error_callback(self, generation: int, message: str) -> None:
-        self.error_received.emit((generation, redact_error(message)))
+    def _error_callback(self, generation: int, source_key: object, message: str) -> None:
+        self.error_received.emit((generation, source_key, redact_error(message)))
 
     def apply_settings(self, settings: AppSettings) -> None:
         """Stop old probes, reset reducer/UI state, then launch the new configuration."""
@@ -152,6 +198,8 @@ class DesktopMonitor(QObject):
         self.settings = settings
         self.dispatcher.update_settings(settings)
         self.reducer = MonitorReducer(terminal_retention=30.0)
+        self._source_errors.clear()
+        self.window.clear_source_error()
         self.window.render(Reduction(MonitorState()))
         self.start()
 
@@ -178,6 +226,7 @@ class DesktopMonitor(QObject):
             ssh_groups.setdefault(key, []).append(endpoint)
 
         if local_endpoints:
+            source_key = object()
             targets = [f"{endpoint.host}:{endpoint.port}" for endpoint in local_endpoints]
             self.sources.append(
                 LocalSource(
@@ -187,13 +236,20 @@ class DesktopMonitor(QObject):
                         "comfyui_progress_bridge.monitor.remote_probe",
                         *targets,
                     ],
-                    on_record=lambda record, token=generation: self._record_callback(token, record),
-                    on_error=lambda message, token=generation: self._error_callback(token, message),
+                    on_record=(
+                        lambda record, token=generation, key=source_key: self._record_callback(
+                            token, key, record
+                        )
+                    ),
+                    on_error=lambda message, token=generation, key=source_key: self._error_callback(
+                        token, key, message
+                    ),
                 )
             )
 
         for endpoints in ssh_groups.values():
             first = endpoints[0]
+            source_key = object()
             probe = (
                 [first.ssh_probe_path]
                 if first.ssh_probe_path
@@ -207,8 +263,14 @@ class DesktopMonitor(QObject):
                     user=first.ssh_user,
                     remote_argv=[first.ssh_remote_python, *probe, *targets],
                     identity_file=first.ssh_identity_file or None,
-                    on_record=lambda record, token=generation: self._record_callback(token, record),
-                    on_error=lambda message, token=generation: self._error_callback(token, message),
+                    on_record=(
+                        lambda record, token=generation, key=source_key: self._record_callback(
+                            token, key, record
+                        )
+                    ),
+                    on_error=lambda message, token=generation, key=source_key: self._error_callback(
+                        token, key, message
+                    ),
                 )
             )
 

@@ -1,11 +1,12 @@
 import os
 import threading
+from dataclasses import replace
 from uuid import UUID
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PyQt6.QtCore import QEvent, QRect, Qt
+from PyQt6.QtCore import QEvent, QPoint, QRect, Qt
 from PyQt6.QtGui import QColor, QImage, QKeyEvent
 from PyQt6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 
@@ -85,6 +86,26 @@ def test_settings_dialog_localizes_endpoint_headers_and_standard_buttons(app, la
     dialog.close()
 
 
+def test_settings_dialog_is_resizable_scrollable_and_keeps_actions_visible(app):
+    dialog = SettingsDialog(AppSettings(language="zh-CN"))
+    dialog.show()
+    app.processEvents()
+
+    assert dialog.minimumWidth() < dialog.maximumWidth()
+    assert dialog.minimumHeight() < dialog.maximumHeight()
+    assert dialog.settings_scroll.widgetResizable()
+    assert dialog.button_box.parentWidget() is dialog
+
+    dialog.resize(540, 380)
+    app.processEvents()
+    save = dialog.button_box.button(QDialogButtonBox.StandardButton.Save)
+    cancel = dialog.button_box.button(QDialogButtonBox.StandardButton.Cancel)
+    assert save.isVisible() and cancel.isVisible()
+    assert dialog.button_box.geometry().bottom() <= dialog.contentsRect().bottom()
+    assert dialog.settings_scroll.verticalScrollBar().maximum() > 0
+    dialog.close()
+
+
 def test_multiple_cards_have_stable_unique_nonoverlapping_layout(app, endpoints, tmp_path):
     window = ProgressWindow(AppSettings(endpoints=endpoints), store=SettingsStore(tmp_path / "x"))
     window.render(Reduction(state_for(endpoints)))
@@ -94,6 +115,97 @@ def test_multiple_cards_have_stable_unique_nonoverlapping_layout(app, endpoints,
     rects = [card.geometry() for card in window.cards]
     assert all(rects[i].bottom() < rects[i + 1].top() for i in range(len(rects) - 1))
     assert window.scroll_area.maximumHeight() <= window.max_scroll_height
+    window.close()
+
+
+def test_idle_endpoint_cards_are_hidden_and_return_when_queue_runs(app, endpoints, tmp_path):
+    window = ProgressWindow(
+        AppSettings(endpoints=endpoints),
+        store=SettingsStore(tmp_path / "hide-idle.json"),
+    )
+    window.show()
+    app.processEvents()
+
+    active_state = state_for(endpoints[:1])
+    window.render(Reduction(active_state))
+    app.processEvents()
+
+    assert [not card.isHidden() for card in window.cards] == [True, False, False]
+    assert not window.scroll_area.isHidden()
+    assert window.scroll_area.height() == window.cards[0].height()
+
+    window.render(Reduction(MonitorState()))
+    app.processEvents()
+
+    assert all(card.isHidden() for card in window.cards)
+    assert window.scroll_area.isHidden()
+
+    second_active = state_for(endpoints[1:2])
+    window.render(Reduction(second_active))
+    app.processEvents()
+
+    assert [not card.isHidden() for card in window.cards] == [False, True, False]
+    assert not window.scroll_area.isHidden()
+    window.close()
+
+
+def test_progress_dock_uses_three_quarter_scale_geometry_and_typography(
+    app, endpoints, tmp_path
+):
+    window = ProgressWindow(
+        AppSettings(mode="professional", endpoints=endpoints[:1]),
+        store=SettingsStore(tmp_path / "three-quarter-scale.json"),
+    )
+    window.show()
+    app.processEvents()
+
+    assert window.width() == 264
+    assert window.max_scroll_height == 353
+    assert window.cards[0].width() == 246
+    assert window.cards[0].height() == 113
+    assert window.collapse_button.width() == 21
+    assert window.gear_button.width() == 21
+    assert window.close_button.width() == 21
+    assert window.font().pixelSize() == 11
+    text_widgets = (
+        window.cards[0].endpoint_label,
+        window.cards[0].queue_label,
+        window.cards[0].stage_label,
+        window.cards[0].node_label,
+        window.cards[0].timestamp_label,
+    )
+    pixel_sizes = [widget.font().pixelSize() for widget in text_widgets]
+    assert pixel_sizes == [11] * len(text_widgets)
+    window.close()
+
+
+def test_three_quarter_scale_professional_card_rows_do_not_overlap(app, endpoints, tmp_path):
+    window = ProgressWindow(
+        AppSettings(mode="professional", endpoints=endpoints[:1]),
+        store=SettingsStore(tmp_path / "non-overlap.json"),
+    )
+    window.render(Reduction(state_for(endpoints[:1])))
+    window.show()
+    app.processEvents()
+    card = window.cards[0]
+    rows = [
+        card.endpoint_label,
+        card.queue_label,
+        card.stage_label,
+        card.node_label,
+        card.progress_bar,
+        card.timestamp_label,
+    ]
+
+    geometries = [
+        (row.mapTo(card, QPoint(0, 0)).y(), row.height())
+        for row in rows
+    ]
+    assert all(
+        geometries[index][0] + geometries[index][1] <= geometries[index + 1][0]
+        for index in range(len(rows) - 1)
+    ), geometries
+    assert geometries[-1][0] + geometries[-1][1] <= card.contentsRect().bottom() + 1
     window.close()
 
 
@@ -162,6 +274,7 @@ def test_only_top_card_has_avatar_and_success_rotates_once(app, endpoints, tmp_p
 def test_opacity_collapse_dock_and_reset_clamp(app, endpoints, tmp_path):
     store = SettingsStore(tmp_path / "settings.json")
     window = ProgressWindow(AppSettings(opacity=61, endpoints=endpoints), store=store)
+    window.render(Reduction(state_for(endpoints[:1])))
     window.show()
     app.processEvents()
     assert abs(window.windowOpacity() - 0.61) < 0.01
@@ -223,7 +336,7 @@ def test_protocol_records_drive_reducer_and_thirty_second_expiry(app, endpoints,
             "data": {"prompt_id": "prompt", "display_node": "Done"},
         }
     )
-    assert window.cards[0].progress_label.text() == window.translator("success")
+    assert window.cards[0].isHidden()
     assert len(monitor.reducer.state.tasks) == 1
     now["value"] = 39.999
     monitor.expire()
@@ -412,16 +525,174 @@ def test_live_settings_restart_uses_complete_transport_key(app, tmp_path, monkey
 
 
 def test_source_errors_are_queued_redacted_bounded_and_visible(app, tmp_path):
-    window = ProgressWindow(AppSettings(), store=SettingsStore(tmp_path / "settings.json"))
+    settings = AppSettings(language="zh-CN")
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
     monitor = DesktopMonitor(window, window.settings)
     thread = threading.Thread(target=monitor._error, args=("password=hunter2 connection refused",))
     thread.start()
     thread.join()
     app.processEvents()
     assert monitor.errors == ["password=[REDACTED] connection refused"]
+    assert window.source_status.text() == "连接被拒绝，正在重连…"
     assert "hunter2" not in window.source_status.text()
+    assert "connection refused" not in window.source_status.toolTip()
     assert not window.source_status.isHidden()
     assert all("hunter2" not in card.status_label.toolTip() for card in window.cards)
+
+
+def test_source_error_is_rule_classified_without_raw_details(app, tmp_path):
+    settings = AppSettings(language="zh-CN")
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, window.settings)
+
+    monitor._display_error((monitor._generation, "Timeout, server 172.18.132.41 not responding"))
+    assert window.source_status.text() == "连接超时，正在重连…"
+    assert "172.18.132.41" not in window.source_status.text()
+    assert "172.18.132.41" not in window.source_status.toolTip()
+
+    monitor._display_error((monitor._generation, "unexpected probe failure"))
+    assert window.source_status.text() == "监控连接异常，正在重连…"
+    assert "unexpected probe failure" not in window.source_status.toolTip()
+
+
+def test_valid_probe_record_clears_error_and_restores_window_height(app, tmp_path):
+    settings = AppSettings(endpoints=(EndpointConfig("127.0.0.1", 8202, "H3"),))
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, settings)
+    window.show()
+    app.processEvents()
+    normal_height = window.height()
+
+    monitor._display_error(
+        (
+            monitor._generation,
+            "Timeout, server 172.18.132.41 not responding with a deliberately long detail " * 4,
+        )
+    )
+    app.processEvents()
+    error_height = window.height()
+    assert error_height >= normal_height
+
+    monitor.consume_record(
+        {
+            "kind": "snapshot",
+            "schema": 2,
+            "endpoint": {"host": "127.0.0.1", "port": 8202},
+            "instance_id": str(UUID(int=1)),
+            "observed_at": 10.0,
+            "online": True,
+            "running_prompt_ids": [],
+            "pending_prompt_ids": [],
+        }
+    )
+    app.processEvents()
+
+    assert window.source_status.isHidden()
+    assert window.source_status.text() == ""
+    assert window.height() == normal_height
+    assert all("server not responding" not in card.status_label.toolTip() for card in window.cards)
+
+
+def test_probe_recovery_clears_only_the_matching_source_error(app, tmp_path):
+    settings = AppSettings(
+        language="zh-CN",
+        endpoints=(
+            EndpointConfig("127.0.0.1", 8202, "Source A"),
+            EndpointConfig("127.0.0.1", 8203, "Source B"),
+        )
+    )
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, settings)
+    source_a, source_b = object(), object()
+
+    def snapshot(port, instance):
+        return {
+            "kind": "snapshot",
+            "schema": 2,
+            "endpoint": {"host": "127.0.0.1", "port": port},
+            "instance_id": str(UUID(int=instance)),
+            "observed_at": 10.0,
+            "online": True,
+            "running_prompt_ids": [],
+            "pending_prompt_ids": [],
+        }
+
+    monitor._display_error((monitor._generation, source_a, "connection timed out"))
+    monitor.consume_record(snapshot(8203, 2), source_b)
+    assert window.source_status.text() == Translator("zh-CN")("source_timeout")
+
+    monitor._display_error((monitor._generation, source_b, "permission denied"))
+    assert window.source_status.text() == Translator("zh-CN")("source_auth")
+    monitor.consume_record(snapshot(8203, 2), source_b)
+    assert window.source_status.text() == Translator("zh-CN")("source_timeout")
+
+    monitor.consume_record(snapshot(8202, 1), source_a)
+    assert window.source_status.isHidden()
+
+
+def test_stale_event_does_not_clear_its_source_error(app, tmp_path):
+    settings = AppSettings(
+        language="zh-CN", endpoints=(EndpointConfig("127.0.0.1", 8202, "H3"),)
+    )
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, settings)
+    source = object()
+    common = {
+        "kind": "event",
+        "schema": 2,
+        "endpoint": {"host": "127.0.0.1", "port": 8202},
+        "instance_id": str(UUID(int=1)),
+        "observed_at": 10.0,
+        "type": "executing",
+        "data": {"prompt_id": "prompt", "display_node": "KSampler"},
+    }
+
+    monitor.consume_record({**common, "sequence": 2}, source)
+    monitor._display_error((monitor._generation, source, "connection timed out"))
+    monitor.consume_record({**common, "sequence": 1}, source)
+    assert window.source_status.text() == Translator("zh-CN")("source_timeout")
+
+    monitor.consume_record({**common, "sequence": 3}, source)
+    assert window.source_status.isHidden()
+
+
+def test_rejected_absent_prompt_event_does_not_clear_source_error(app, tmp_path):
+    settings = AppSettings(
+        language="zh-CN", endpoints=(EndpointConfig("127.0.0.1", 8202, "H3"),)
+    )
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, settings)
+    source = object()
+    snapshot = {
+        "kind": "snapshot",
+        "schema": 2,
+        "endpoint": {"host": "127.0.0.1", "port": 8202},
+        "instance_id": str(UUID(int=1)),
+        "observed_at": 10.0,
+        "online": True,
+        "running_prompt_ids": [],
+        "pending_prompt_ids": [],
+    }
+    monitor.consume_record(snapshot, source)
+    monitor._display_error((monitor._generation, source, "connection timed out"))
+
+    monitor.consume_record(
+        {
+            "kind": "event",
+            "schema": 2,
+            "endpoint": {"host": "127.0.0.1", "port": 8202},
+            "instance_id": str(UUID(int=1)),
+            "observed_at": 11.0,
+            "sequence": 1,
+            "type": "progress",
+            "data": {"prompt_id": "absent", "value": 1, "max": 20},
+        },
+        source,
+    )
+    assert window.source_status.text() == Translator("zh-CN")("source_timeout")
+
+    monitor.consume_record({**snapshot, "running_prompt_ids": ["present"]}, source)
+    assert window.source_status.isHidden()
 
 
 def test_validation_feedback_accessibility_keyboard_and_reclamp(app, tmp_path, monkeypatch):
@@ -484,6 +755,42 @@ def test_show_override_does_not_leak_during_window_initialization(app, tmp_path)
     window.close()
 
 
+def test_language_save_keeps_force_shown_dock_visible(app, tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+    persisted = AppSettings(language="zh-CN", dock_enabled=False)
+    store.save(persisted)
+    runtime = desktop_app.runtime_settings(persisted, show=True)
+    dialog_bases = []
+
+    class LanguageOnlyDialog:
+        def __init__(self, settings, parent):
+            self.settings = settings
+            dialog_bases.append(settings)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def result_settings(self):
+            return replace(self.settings, language="en-US")
+
+    monkeypatch.setattr(
+        "comfyui_progress_bridge.desktop.widgets.SettingsDialog", LanguageOnlyDialog
+    )
+    window = ProgressWindow(runtime, persisted_settings=persisted, store=store)
+    window.show()
+    app.processEvents()
+
+    window.open_settings()
+    app.processEvents()
+
+    assert dialog_bases[0].dock_enabled is True
+    assert window.isVisible()
+    assert window.settings.language == "en-US"
+    assert store.load().dock_enabled is True
+    window.close()
+
+
 def test_demo_endpoints_never_leak_from_internal_window_saves(app, tmp_path):
     path = tmp_path / "settings.json"
     store = SettingsStore(path)
@@ -505,7 +812,7 @@ def test_demo_endpoints_never_leak_from_internal_window_saves(app, tmp_path):
     window.close()
 
 
-def test_dialog_starts_from_persisted_base_and_deliberate_apply_becomes_effective(
+def test_dialog_uses_persisted_base_with_effective_visibility_and_applies_deliberate_changes(
     app, tmp_path, monkeypatch
 ):
     path = tmp_path / "settings.json"
@@ -534,7 +841,7 @@ def test_dialog_starts_from_persisted_base_and_deliberate_apply_becomes_effectiv
     initialized_base = store.load()
     window.open_settings()
 
-    assert seen == [initialized_base]
+    assert seen == [replace(initialized_base, dock_enabled=True)]
     assert store.load() == deliberate
     assert window.persisted_settings == deliberate
     assert window.settings == deliberate

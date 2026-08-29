@@ -191,3 +191,4 @@ class Transition:
 class Reduction:
     state: MonitorState
     transitions: tuple[Transition, ...] = ()
+    accepted: bool | None = None

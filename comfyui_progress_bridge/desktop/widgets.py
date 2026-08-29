@@ -71,6 +71,13 @@ THEMES = {
     "system": ("palette(window)", "palette(base)", "palette(text)", "palette(mid)"),
 }
 
+DOCK_UI_SCALE = 0.75
+
+
+def _dock_px(value: int) -> int:
+    """Scale one dock-only pixel metric using predictable half-up rounding."""
+    return max(1, int(value * DOCK_UI_SCALE + 0.5))
+
 
 class ElidedLabel(QLabel):
     """A fixed-bound label that always preserves its full value as a tooltip."""
@@ -108,7 +115,7 @@ class ElidedLabel(QLabel):
 class AvatarLabel(QLabel):
     """Paint one PNG clipped to a circular frame."""
 
-    def __init__(self, size: int = 54, parent: QWidget | None = None) -> None:
+    def __init__(self, size: int = _dock_px(54), parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(size, size)
         self._pixmap = QPixmap()
@@ -170,7 +177,7 @@ class DragHandle(QLabel):
 
 
 class EndpointCard(QFrame):
-    CARD_WIDTH = 328
+    CARD_WIDTH = _dock_px(328)
 
     def __init__(
         self,
@@ -184,15 +191,18 @@ class EndpointCard(QFrame):
         super().__init__(parent)
         self.config = config
         self.translator = translator
+        card_font = self.font()
+        card_font.setPixelSize(_dock_px(14))
+        self.setFont(card_font)
         self.setObjectName("endpointCard")
         self.setFixedWidth(self.CARD_WIDTH)
         self.setStyleSheet(
-            f"QFrame#endpointCard {{ border: 2px solid {config.color}; "
-            "border-radius: 7px; padding: 5px; }"
+            f"QFrame#endpointCard {{ border: {_dock_px(2)}px solid {config.color}; "
+            f"border-radius: {_dock_px(7)}px; padding: {_dock_px(5)}px; }}"
         )
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(10, 7, 9, 7)
-        outer.setSpacing(9)
+        outer.setContentsMargins(*(_dock_px(value) for value in (10, 7, 9, 7)))
+        outer.setSpacing(_dock_px(9))
         self.avatar: AvatarLabel | None = None
         if avatar_path is not None:
             self.avatar = AvatarLabel(parent=self)
@@ -200,7 +210,7 @@ class EndpointCard(QFrame):
             outer.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignTop)
 
         body = QVBoxLayout()
-        body.setSpacing(3)
+        body.setSpacing(_dock_px(3))
         outer.addLayout(body, 1)
         header = QHBoxLayout()
         self.endpoint_label = ElidedLabel(f"{config.name} · {config.host}:{config.port}")
@@ -217,8 +227,8 @@ class EndpointCard(QFrame):
 
         self.details = QWidget(self)
         details = QVBoxLayout(self.details)
-        details.setContentsMargins(0, 3, 0, 0)
-        details.setSpacing(2)
+        details.setContentsMargins(0, _dock_px(3), 0, 0)
+        details.setSpacing(_dock_px(2))
         self.stage_label = ElidedLabel(translator("no_task"))
         self.stage_label.setObjectName("stageLabel")
         self.node_label = ElidedLabel("—")
@@ -230,6 +240,7 @@ class EndpointCard(QFrame):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(_dock_px(14))
         self.progress_label = QLabel("—")
         self.progress_label.setObjectName("progressLabel")
         progress_row.addWidget(self.progress_bar, 1)
@@ -240,7 +251,18 @@ class EndpointCard(QFrame):
         details.addWidget(self.timestamp_label)
         body.addWidget(self.details)
         self.details.setVisible(professional)
-        self.setFixedHeight(151 if professional else 67)
+        for widget in (
+            self.endpoint_label,
+            self.status_label,
+            self.queue_label,
+            self.stage_label,
+            self.node_label,
+            self.progress_bar,
+            self.progress_label,
+            self.timestamp_label,
+        ):
+            widget.setFont(card_font)
+        self.setFixedHeight(_dock_px(151 if professional else 67))
 
     @staticmethod
     def _tasks_for(state: MonitorState, config: EndpointConfig) -> list[TaskState]:
@@ -371,8 +393,16 @@ class SettingsDialog(QDialog):
         self._test_worker_closed = False
         self.t = Translator(settings.language)
         self.setWindowTitle(self.t("settings"))
-        self.resize(690, 520)
+        self.setSizeGripEnabled(True)
+        self.setMinimumSize(480, 340)
         root = QVBoxLayout(self)
+        self.settings_scroll = QScrollArea(self)
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_content = QWidget()
+        content = QVBoxLayout(self.settings_content)
+        self.settings_scroll.setWidget(self.settings_content)
+        root.addWidget(self.settings_scroll, 1)
         form = QFormLayout()
         self.language = QComboBox()
         for code in LANGUAGES:
@@ -399,7 +429,7 @@ class SettingsDialog(QDialog):
         form.addRow(self.t("opacity"), self.opacity)
         form.addRow(self.t("dock_enabled"), self.dock)
         form.addRow(self.t("avatar_enabled"), self.avatar_enabled)
-        root.addLayout(form)
+        content.addLayout(form)
 
         self.endpoint_table = QTableWidget(len(settings.endpoints), 11)
         self.endpoint_table.setHorizontalHeaderLabels(
@@ -434,7 +464,7 @@ class SettingsDialog(QDialog):
             )
             for column, value in enumerate(values):
                 self.endpoint_table.setItem(row, column, QTableWidgetItem(value))
-        root.addWidget(self.endpoint_table)
+        content.addWidget(self.endpoint_table)
 
         self.avatar_edits: list[QLineEdit] = []
         avatar_box = QHBoxLayout()
@@ -450,7 +480,7 @@ class SettingsDialog(QDialog):
             column.addWidget(button)
             avatar_box.addLayout(column)
             self.avatar_edits.append(edit)
-        root.addLayout(avatar_box)
+        content.addLayout(avatar_box)
 
         completion_form = QFormLayout()
         notification = settings.notifications
@@ -533,16 +563,18 @@ class SettingsDialog(QDialog):
         completion_form.addRow(self.t("audio"), self.audio_mode)
         completion_form.addRow(self.t("wav_file"), self.audio_path)
         completion_form.addRow("", self.audio_test_button)
-        root.addLayout(completion_form)
+        content.addLayout(completion_form)
+        content.addStretch(1)
 
         self.validation_label = QLabel("")
         self.validation_label.setObjectName("validationError")
         self.validation_label.setWordWrap(True)
         self.validation_label.setStyleSheet("color: #d33;")
         root.addWidget(self.validation_label)
-        buttons = QDialogButtonBox(
+        self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons = self.button_box
         buttons.button(QDialogButtonBox.StandardButton.Save).setText(self.t("save"))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self.t("cancel"))
         buttons.accepted.connect(self._validate_and_accept)
@@ -552,6 +584,15 @@ class SettingsDialog(QDialog):
             self.reset_button.clicked.connect(parent.reset_position)
         buttons.addButton(self.reset_button, QDialogButtonBox.ButtonRole.ResetRole)
         root.addWidget(buttons)
+
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = max(self.minimumWidth(), min(660, available.width() - 80))
+            height = max(self.minimumHeight(), min(500, available.height() - 100))
+            self.resize(width, height)
+        else:
+            self.resize(660, 500)
 
     def _set_test_controls_enabled(self, enabled: bool) -> None:
         for button in self.notification_test_buttons.values():
@@ -726,7 +767,7 @@ class ProgressWindow(QWidget):
     """Frameless, always-on-top, bounded desktop progress dock."""
 
     settings_applied = pyqtSignal(object)
-    max_scroll_height = 470
+    max_scroll_height = _dock_px(470)
 
     def __init__(
         self,
@@ -739,6 +780,9 @@ class ProgressWindow(QWidget):
             None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.settings = settings
+        dock_font = self.font()
+        dock_font.setPixelSize(_dock_px(14))
+        self.setFont(dock_font)
         # Runtime settings may include process-local CLI substitutions (for
         # example --show or --demo). Never use them as the source of truth for
         # an implicit save: mutable UI state is merged into this persisted base.
@@ -754,11 +798,11 @@ class ProgressWindow(QWidget):
         self.cards: list[EndpointCard] = []
         self.setObjectName("progressWindow")
         self.setWindowTitle(self.translator("app_title"))
-        self.setFixedWidth(352)
+        self.setFixedWidth(_dock_px(352))
         self.setWindowOpacity(settings.opacity / 100)
         root = QVBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(4)
+        root.setContentsMargins(*(_dock_px(6) for _ in range(4)))
+        root.setSpacing(_dock_px(4))
         bar = QHBoxLayout()
         self.drag_handle = DragHandle("⠿", self)
         self.drag_handle.setToolTip(self.translator("drag"))
@@ -768,20 +812,20 @@ class ProgressWindow(QWidget):
         bar.addWidget(self.drag_handle, 1)
         self.collapse_button = QPushButton("▾")
         self.collapse_button.setAccessibleName(self.translator("collapse"))
-        self.collapse_button.setFixedWidth(28)
+        self.collapse_button.setFixedSize(_dock_px(28), _dock_px(28))
         self.collapse_button.clicked.connect(
             lambda: self.set_collapsed(not self.settings.collapsed)
         )
         bar.addWidget(self.collapse_button)
         self.gear_button = QPushButton("⚙")
-        self.gear_button.setFixedWidth(28)
+        self.gear_button.setFixedSize(_dock_px(28), _dock_px(28))
         self.gear_button.setToolTip(self.translator("settings"))
         self.gear_button.setAccessibleName(self.translator("settings"))
         self.gear_button.setAccessibleDescription(self.translator("settings"))
         self.gear_button.clicked.connect(self.open_settings)
         bar.addWidget(self.gear_button)
         self.close_button = QPushButton("×")
-        self.close_button.setFixedWidth(28)
+        self.close_button.setFixedSize(_dock_px(28), _dock_px(28))
         self.close_button.setToolTip(self.translator("close"))
         self.close_button.setAccessibleName(self.translator("close"))
         self.close_button.setAccessibleDescription("Hide dock; use the tray icon to restore it")
@@ -802,7 +846,7 @@ class ProgressWindow(QWidget):
         self.card_container = QWidget()
         self.card_layout = QVBoxLayout(self.card_container)
         self.card_layout.setContentsMargins(0, 0, 0, 0)
-        self.card_layout.setSpacing(8)
+        self.card_layout.setSpacing(_dock_px(8))
         self.card_layout.addStretch(1)
         self.scroll_area.setWidget(self.card_container)
         root.addWidget(self.scroll_area)
@@ -856,6 +900,17 @@ class ProgressWindow(QWidget):
             return None
         return self.settings.avatar_paths[self.avatar_index % len(self.settings.avatar_paths)]
 
+    def _refresh_card_area(self) -> None:
+        """Size the card area from active queues only and hide it when all are idle."""
+        visible_cards = [card for card in self.cards if not card.isHidden()]
+        content_height = sum(card.height() for card in visible_cards) + (
+            self.card_layout.spacing() * max(0, len(visible_cards) - 1)
+        )
+        self.scroll_area.setFixedHeight(min(self.max_scroll_height, content_height))
+        self.scroll_area.setVisible(bool(visible_cards) and not self.settings.collapsed)
+        self.adjustSize()
+        self.schedule_clamp()
+
     def _build_cards(self) -> None:
         for card in self.cards:
             card.deleteLater()
@@ -866,13 +921,12 @@ class ProgressWindow(QWidget):
                 self.translator,
                 professional=self.settings.mode == "professional",
                 avatar_path=self._avatar_path() if index == 0 else None,
+                parent=self.card_container,
             )
+            card.hide()
             self.card_layout.insertWidget(index, card)
             self.cards.append(card)
-        content_height = sum(card.height() for card in self.cards) + 8 * max(0, len(self.cards) - 1)
-        self.scroll_area.setFixedHeight(min(self.max_scroll_height, content_height))
-        self.adjustSize()
-        self.schedule_clamp()
+        self._refresh_card_area()
 
     def _apply_theme(self) -> None:
         window, card, text, muted = THEMES[self.settings.theme]
@@ -880,10 +934,12 @@ class ProgressWindow(QWidget):
             self.setStyleSheet("")
             return
         self.setStyleSheet(
-            f"QWidget#progressWindow {{ background: {window}; color: {text}; border-radius: 9px; }}"
+            f"QWidget#progressWindow {{ background: {window}; color: {text}; "
+            f"border-radius: {_dock_px(9)}px; }}"
             f" QFrame#endpointCard {{ background: {card}; color: {text}; }}"
             f" QLabel {{ color: {text}; }} QLabel#timestampLabel {{ color: {muted}; }}"
-            f" QPushButton {{ background: {card}; color: {text}; border: none; padding: 4px; }}"
+            f" QPushButton {{ background: {card}; color: {text}; border: none; "
+            f"padding: {_dock_px(4)}px; }}"
         )
 
     def render(self, reduction: Reduction) -> None:
@@ -898,7 +954,12 @@ class ProgressWindow(QWidget):
                 self._handled_completions.add(transition.task)
                 self._rotate_avatar()
         for card in self.cards:
-            card.update_state(reduction.state)
+            tasks = card._tasks_for(reduction.state, card.config)
+            has_active_queue = any(task.status in {"running", "pending"} for task in tasks)
+            card.setVisible(has_active_queue)
+            if has_active_queue:
+                card.update_state(reduction.state)
+        self._refresh_card_area()
 
     def _rotate_avatar(self) -> None:
         if not self.settings.avatar_enabled or len(self.settings.avatar_paths) < 2:
@@ -935,14 +996,12 @@ class ProgressWindow(QWidget):
                 return
         else:
             self.settings = replace(self.settings, collapsed=collapsed)
-        self.scroll_area.setVisible(not collapsed)
         self.collapse_button.setText("▸" if collapsed else "▾")
         self.collapse_button.setToolTip(self.translator("expand" if collapsed else "collapse"))
         self.collapse_button.setAccessibleName(
             self.translator("expand" if collapsed else "collapse")
         )
-        self.adjustSize()
-        self.schedule_clamp()
+        self._refresh_card_area()
 
     def set_dock_enabled(self, enabled: bool) -> None:
         if not self._save_internal(dock_enabled=enabled):
@@ -978,7 +1037,11 @@ class ProgressWindow(QWidget):
         self.schedule_clamp()
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(self.persisted_settings, self)
+        dialog_settings = replace(
+            self.persisted_settings,
+            dock_enabled=self.settings.dock_enabled,
+        )
+        dialog = SettingsDialog(dialog_settings, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -1083,11 +1146,24 @@ class ProgressWindow(QWidget):
         point = self.clamp_to(screen.availableGeometry())
         self._save_internal(position=WindowPosition(screen.name(), point.x(), point.y()))
 
-    def show_source_error(self, message: str) -> None:
-        self.source_status.setText(f"{self.translator('error')}: {message}")
+    def show_source_error(self, message_key: str) -> None:
+        message = self.translator(message_key)
+        self.source_status.setText(message)
         self.source_status.setToolTip(message)
         self.source_status.show()
         for card in self.cards:
             card.status_label.setText(self.translator("error"))
             card.status_label.setToolTip(message)
+        self.schedule_clamp()
+
+    def clear_source_error(self) -> None:
+        self.source_status.clear()
+        self.source_status.setToolTip("")
+        self.source_status.hide()
+        for card in self.cards:
+            card.status_label.setToolTip("")
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+        self.adjustSize()
         self.schedule_clamp()

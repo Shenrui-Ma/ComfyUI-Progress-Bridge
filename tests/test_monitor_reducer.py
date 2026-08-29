@@ -91,6 +91,19 @@ def test_duplicate_and_stale_event_sequences_are_ignored():
     assert stale.state.tasks[TaskKey(ONE, "same")].progress_value == 4
 
 
+def test_executing_event_clears_previous_node_progress():
+    state = reduce_event(
+        MonitorState(), event(ONE, 1, node="146", value=484, max=484), now=100
+    ).state
+
+    result = reduce_event(state, event(ONE, 2, "executing", node="147"), now=101)
+    task = result.state.tasks[TaskKey(ONE, "same")]
+
+    assert task.node_name == "147"
+    assert task.progress_value is None
+    assert task.progress_max is None
+
+
 def test_event_from_different_uuid_cannot_replace_known_generation():
     replacement = endpoint(8189, "00000000-0000-0000-0000-000000000009")
     state = reduce_event(MonitorState(), event(ONE, 20, value=1, max=2), now=100).state

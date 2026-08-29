@@ -82,6 +82,11 @@ REQUIRED_KEYS = (
     "audio_custom",
     "wav_file",
     "test_audio",
+    "source_timeout",
+    "source_refused",
+    "source_auth",
+    "source_protocol",
+    "source_unavailable",
 )
 
 LANGUAGES: dict[str, dict[str, str]] = {
@@ -165,6 +170,11 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "audio_custom": "Custom WAV",
         "wav_file": "WAV file",
         "test_audio": "Test audio",
+        "source_timeout": "Connection timed out; reconnecting…",
+        "source_refused": "Connection refused; reconnecting…",
+        "source_auth": "SSH authentication failed; check settings",
+        "source_protocol": "Probe version is incompatible",
+        "source_unavailable": "Monitor connection interrupted; reconnecting…",
     },
     "zh-CN": {
         "app_title": "ComfyUI 进度",
@@ -246,6 +256,11 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "audio_custom": "自定义 WAV",
         "wav_file": "WAV 文件",
         "test_audio": "测试声音",
+        "source_timeout": "连接超时，正在重连…",
+        "source_refused": "连接被拒绝，正在重连…",
+        "source_auth": "SSH 认证失败，请检查设置",
+        "source_protocol": "探针版本不兼容",
+        "source_unavailable": "监控连接异常，正在重连…",
     },
     "ja-JP": {
         "app_title": "ComfyUI 進捗",
@@ -327,6 +342,11 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "audio_custom": "カスタム WAV",
         "wav_file": "WAV ファイル",
         "test_audio": "音声をテスト",
+        "source_timeout": "接続がタイムアウトしました。再接続中…",
+        "source_refused": "接続が拒否されました。再接続中…",
+        "source_auth": "SSH 認証に失敗しました。設定を確認してください",
+        "source_protocol": "プローブのバージョンに互換性がありません",
+        "source_unavailable": "監視接続が中断されました。再接続中…",
     },
     "ko-KR": {
         "app_title": "ComfyUI 진행률",
@@ -408,6 +428,11 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "audio_custom": "사용자 WAV",
         "wav_file": "WAV 파일",
         "test_audio": "소리 테스트",
+        "source_timeout": "연결 시간이 초과되었습니다. 다시 연결 중…",
+        "source_refused": "연결이 거부되었습니다. 다시 연결 중…",
+        "source_auth": "SSH 인증에 실패했습니다. 설정을 확인하세요",
+        "source_protocol": "프로브 버전이 호환되지 않습니다",
+        "source_unavailable": "모니터 연결이 중단되었습니다. 다시 연결 중…",
     },
 }
 

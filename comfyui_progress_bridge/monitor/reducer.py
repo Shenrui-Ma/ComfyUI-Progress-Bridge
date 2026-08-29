@@ -176,10 +176,14 @@ def reduce_snapshot(
         # clear terminal tombstones. It may only establish/mark this generation
         # when no conflicting generation is already known.
         if current is not None and current != snapshot.endpoint:
-            return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+            return Reduction(
+                _state(endpoints, tasks, sequences, tombstones), tuple(transitions), False
+            )
         previous = endpoints.get(snapshot.endpoint, EndpointState(snapshot.endpoint))
         endpoints[snapshot.endpoint] = replace(previous, online=False)
-        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+        return Reduction(
+            _state(endpoints, tasks, sequences, tombstones), tuple(transitions), True
+        )
 
     transitions.extend(
         _accept_snapshot_generation(
@@ -234,7 +238,7 @@ def reduce_snapshot(
         existing = tasks.get(key)
         tasks[key] = replace(existing, status="pending") if existing else TaskState(key, "pending")
 
-    return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+    return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions), True)
 
 
 def _string(
@@ -303,29 +307,33 @@ def reduce_event(
     transitions = list(expired.transitions)
 
     if not _accept_event_generation(event.endpoint, endpoints):
-        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions), False)
     if event.type not in SUPPORTED_EVENTS or event.sequence <= sequences.get(event.endpoint, -1):
-        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions), False)
     sequences[event.endpoint] = event.sequence
     endpoints.setdefault(event.endpoint, EndpointState(event.endpoint))
 
     prompt_id = _string(event.data, "prompt_id", maximum=MAX_PROMPT_ID_LENGTH)
     if not prompt_id:
-        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions), False)
     key = TaskKey(event.endpoint, prompt_id)
     if key in tombstones:
-        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions), False)
 
     endpoint_state = endpoints[event.endpoint]
     existing = tasks.get(key)
     if existing is not None and existing.terminal:
-        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+        return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions), False)
     if event.type not in TERMINAL_EVENTS and existing is None:
         if endpoint_state.require_snapshot_for_unknown_nonterminal:
-            return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+            return Reduction(
+                _state(endpoints, tasks, sequences, tombstones), tuple(transitions), False
+            )
         active = endpoint_state.active_prompt_ids
         if active is not None and prompt_id not in active:
-            return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+            return Reduction(
+                _state(endpoints, tasks, sequences, tombstones), tuple(transitions), False
+            )
 
     existing = existing or TaskState(key, "running")
     node_name = (
@@ -357,13 +365,21 @@ def reduce_event(
             stage_key=stage.key,
             node_name=stage.node_name,
             node_type=node_type,
-            progress_value=_number(event.data, "value", existing.progress_value),
-            progress_max=_number(event.data, "max", existing.progress_max),
+            progress_value=(
+                None
+                if event.type == "executing"
+                else _number(event.data, "value", existing.progress_value)
+            ),
+            progress_max=(
+                None
+                if event.type == "executing"
+                else _number(event.data, "max", existing.progress_max)
+            ),
             error_message=None,
             terminal_at=None,
         )
 
-    return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions))
+    return Reduction(_state(endpoints, tasks, sequences, tombstones), tuple(transitions), True)
 
 
 class MonitorReducer:
