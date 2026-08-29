@@ -4,6 +4,11 @@ A lightweight, server-side [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 
 
 It is designed for desktop companions, status docks, dashboards, and other observers that need the real active node and sampler progress without hijacking the WebSocket used by the client that submitted the prompt.
 
+<p align="center">
+  <img src="docs/images/comfyui-progress-dock.png" width="549" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
+</p>
+<p align="center"><sub>Transparent desktop dock with live queue, node, and sampler progress.</sub></p>
+
 ## Why this exists
 
 ComfyUI normally sends `executing` and `progress` WebSocket events to the submitting client's `client_id`. A second WebSocket opened by an external monitor therefore may see the queue but miss node-level events.
