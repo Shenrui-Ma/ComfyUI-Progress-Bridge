@@ -15,11 +15,11 @@ wheels = [
 name = "comfyui-progress-bridge"
 version = "0.1.0"
 source = { editable = "." }
-
-[package.optional-dependencies]
-desktop = [
+dependencies = [
     { name = "pyqt6" },
 ]
+
+[package.optional-dependencies]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
@@ -27,11 +27,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pyqt6", marker = "extra == 'desktop'", specifier = ">=6.7" },
+    { name = "pyqt6", specifier = ">=6.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
 ]
-provides-extras = ["dev", "desktop"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "exceptiongroup"

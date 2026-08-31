@@ -274,10 +274,62 @@ def test_comfyui_entrypoint_installs_the_bridge(monkeypatch):
     monkeypatch.setitem(sys.modules, "comfy", comfy_module)
     monkeypatch.setitem(sys.modules, "comfy.cli_args", cli_args_module)
     monkeypatch.setitem(sys.modules, "server", server_module)
+    monkeypatch.setattr("comfyui_progress_bridge.launch_desktop", lambda port: False)
 
     namespace = runpy.run_path(str(Path(__file__).parents[1] / "__init__.py"))
 
     assert namespace["NODE_CLASS_MAPPINGS"] == {}
+    assert getattr(Server.send_sync, "_comfy_progress_bridge", False) is True
+
+
+def test_successful_comfyui_install_launches_desktop_with_actual_port(monkeypatch):
+    import comfyui_progress_bridge
+
+    class Server:
+        def send_sync(self, event, data, sid=None):
+            return None
+
+    comfy_module = types.ModuleType("comfy")
+    cli_args_module = types.ModuleType("comfy.cli_args")
+    cli_args_module.args = types.SimpleNamespace(port=8197)
+    comfy_module.cli_args = cli_args_module
+    server_module = types.ModuleType("server")
+    server_module.PromptServer = Server
+    monkeypatch.setitem(sys.modules, "comfy", comfy_module)
+    monkeypatch.setitem(sys.modules, "comfy.cli_args", cli_args_module)
+    monkeypatch.setitem(sys.modules, "server", server_module)
+    launched = []
+
+    assert (
+        comfyui_progress_bridge.install_comfyui_bridge(
+            desktop_launcher=lambda port: launched.append(port) or True
+        )
+        is True
+    )
+    assert launched == [8197]
+
+
+def test_desktop_launcher_exception_does_not_undo_bridge_install(monkeypatch):
+    import comfyui_progress_bridge
+
+    class Server:
+        def send_sync(self, event, data, sid=None):
+            return None
+
+    comfy_module = types.ModuleType("comfy")
+    cli_args_module = types.ModuleType("comfy.cli_args")
+    cli_args_module.args = types.SimpleNamespace(port=8198)
+    comfy_module.cli_args = cli_args_module
+    server_module = types.ModuleType("server")
+    server_module.PromptServer = Server
+    monkeypatch.setitem(sys.modules, "comfy", comfy_module)
+    monkeypatch.setitem(sys.modules, "comfy.cli_args", cli_args_module)
+    monkeypatch.setitem(sys.modules, "server", server_module)
+
+    def fail(_port):
+        raise RuntimeError("desktop failed")
+
+    assert comfyui_progress_bridge.install_comfyui_bridge(desktop_launcher=fail) is True
     assert getattr(Server.send_sync, "_comfy_progress_bridge", False) is True
 
 

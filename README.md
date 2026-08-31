@@ -27,8 +27,8 @@ ComfyUI PromptServer.send_sync
 - Preserves the original `PromptServer.send_sync` return value and client routing
 - Sends only a compact allowlist of useful fields
 - Uses loopback by default; no network service is exposed
-- Has no third-party runtime dependencies
-- Is idempotent and fail-open: monitoring errors never stop ComfyUI execution
+- Automatically starts one native PyQt6 desktop progress dock when ComfyUI imports the extension
+- Is idempotent and fail-open: monitoring or desktop-launch errors never stop ComfyUI execution
 - Provides a server extension only; it intentionally adds no workflow node
 
 ## Installation
@@ -36,12 +36,32 @@ ComfyUI PromptServer.send_sync
 ```bash
 cd /path/to/ComfyUI/custom_nodes
 git clone https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge.git
+cd ComfyUI-Progress-Bridge
+python -m pip install -r requirements.txt
 ```
 
-Restart that ComfyUI instance. Its startup log should include, for example:
+ComfyUI Manager installs `requirements.txt` automatically; the final command is only needed for a
+manual clone and must use the same Python environment that runs ComfyUI.
+
+Restart that ComfyUI instance. On a desktop system, importing the custom node now starts the
+progress dock automatically—no workflow node, separate terminal command, or first inference is
+required. Its startup log should include, for example:
 
 ```text
 [ComfyUI Progress Bridge] schema 2 UDP 127.0.0.1:30999
+[ComfyUI Progress Bridge] desktop launch requested
+```
+
+The importing ComfyUI HTTP port is passed to the dock automatically, including custom ports such
+as `8189`; this launch-time endpoint does not overwrite saved desktop settings. A secure per-endpoint
+lock prevents repeated imports from opening duplicate dock windows while allowing different local
+ComfyUI ports to have their own monitors.
+
+For a headless server, or when a separately managed monitor is preferred, disable automatic UI
+startup before launching ComfyUI:
+
+```bash
+COMFY_PROGRESS_BRIDGE_AUTOSTART=0 python main.py --port 8188
 ```
 
 Every ComfyUI process sends to the shared loopback listener on UDP port `30999`.

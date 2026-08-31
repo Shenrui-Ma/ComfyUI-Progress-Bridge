@@ -331,6 +331,10 @@ def demo_reduction(step: int = 0) -> Reduction:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Native ComfyUI progress dock")
     parser.add_argument("--config", type=Path, help="override the settings JSON path")
+    parser.add_argument(
+        "--endpoint",
+        help="use one numeric ComfyUI endpoint for this launch (for example 127.0.0.1:8188)",
+    )
     parser.add_argument("--demo", action="store_true", help="show deterministic synthetic activity")
     parser.add_argument(
         "--show",
@@ -340,11 +344,27 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _runtime_endpoint(value: str) -> EndpointConfig:
+    """Parse a process-local numeric endpoint without changing persisted settings."""
+    try:
+        host, raw_port = value.rsplit(":", 1)
+        port = int(raw_port)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("endpoint must use numeric HOST:PORT syntax") from exc
+    return EndpointConfig(host, port, f"ComfyUI {port}", "#6C8EFF")
+
+
 def runtime_settings(
-    settings: AppSettings, *, demo: bool = False, show: bool = False
+    settings: AppSettings,
+    *,
+    demo: bool = False,
+    show: bool = False,
+    endpoint: str | None = None,
 ) -> AppSettings:
     """Apply process-local CLI overrides without persisting them."""
     result = demo_settings(settings) if demo else settings
+    if endpoint is not None:
+        result = replace(result, endpoints=(_runtime_endpoint(endpoint),))
     return replace(result, dock_enabled=True) if show else result
 
 
@@ -354,7 +374,12 @@ def main(argv: list[str] | None = None) -> int:
     application.setApplicationName("ComfyUI Progress Bridge")
     store = SettingsStore(arguments.config)
     persisted_settings = store.load()
-    settings = runtime_settings(persisted_settings, demo=arguments.demo, show=arguments.show)
+    settings = runtime_settings(
+        persisted_settings,
+        demo=arguments.demo,
+        show=arguments.show,
+        endpoint=arguments.endpoint,
+    )
     window = ProgressWindow(settings, persisted_settings=persisted_settings, store=store)
     window.render(demo_reduction(0) if arguments.demo else Reduction(MonitorState()))
     if settings.dock_enabled:
