@@ -1,6 +1,6 @@
 # ComfyUI Progress Bridge
 
-A lightweight, server-side [ComfyUI](https://github.com/comfyanonymous/ComfyUI) extension that mirrors live execution events to an external visual progress monitor over UDP.
+A lightweight [ComfyUI](https://github.com/comfyanonymous/ComfyUI) extension that shows live execution progress directly in the ComfyUI browser page and mirrors the same compact events to an optional native desktop monitor over UDP.
 
 It is designed for desktop companions, status docks, dashboards, and other observers that need the real active node and sampler progress without hijacking the WebSocket used by the client that submitted the prompt.
 
@@ -26,6 +26,8 @@ ComfyUI PromptServer.send_sync
 - Mirrors `executing`, `progress`, `execution_error`, `execution_interrupted`, and `execution_success`
 - Preserves the original `PromptServer.send_sync` return value and client routing
 - Sends only a compact allowlist of useful fields
+- Adds a zero-configuration floating progress panel to the ComfyUI browser page
+- Works through an ordinary SSH port forward or WebSocket-capable reverse proxy
 - Uses loopback by default; no network service is exposed
 - Automatically starts one native PyQt6 desktop progress dock when ComfyUI imports the extension
 - Is idempotent and fail-open: monitoring or desktop-launch errors never stop ComfyUI execution
@@ -43,9 +45,10 @@ python -m pip install -r requirements.txt
 ComfyUI Manager installs `requirements.txt` automatically; the final command is only needed for a
 manual clone and must use the same Python environment that runs ComfyUI.
 
-Restart that ComfyUI instance. On a desktop system, importing the custom node now starts the
-progress dock automatically—no workflow node, separate terminal command, or first inference is
-required. Its startup log should include, for example:
+Restart that ComfyUI instance. The browser panel is loaded with the ComfyUI page—no workflow node,
+separate local program, UDP forwarding, or first inference is required. On a desktop system,
+importing the custom node also starts the optional native progress dock automatically. Its startup
+log should include, for example:
 
 ```text
 [ComfyUI Progress Bridge] schema 2 UDP 127.0.0.1:30999
@@ -69,6 +72,47 @@ The schema-v2 envelope carries the exact ComfyUI HTTP port and a process instanc
 so ports such as `8189` and `9189` and identical prompt IDs cannot collide.
 
 > Each running ComfyUI process must be restarted once after installation. Wait for `running=0` and `pending=0` before restarting a production instance.
+
+## Browser panel
+
+The floating panel appears automatically near the upper-right corner of every ComfyUI page served
+by an installation containing this extension. It shows the connected server, queue count, current
+node, sampler percentage, and terminal state. The arrow button collapses the details and remembers
+that choice in the browser.
+
+The panel listens to ComfyUI's existing client-routed WebSocket events. It therefore follows the
+same privacy boundary as the normal ComfyUI interface instead of republishing one user's progress
+or error details to every connected browser. Queue status is used to return the panel to idle when
+an API-submitted job does not emit a client-specific terminal event.
+
+### Local ComfyUI
+
+1. Install the extension in the local ComfyUI `custom_nodes` directory.
+2. Restart ComfyUI.
+3. Open or refresh the ComfyUI page. The browser panel is ready immediately.
+4. The native PyQt6 dock also starts by default. Set `COMFY_PROGRESS_BRIDGE_AUTOSTART=0` before
+   starting ComfyUI if only the in-browser panel is wanted.
+
+### Remote ComfyUI through SSH
+
+Install and restart the extension **on the remote server**, preferably with native desktop startup
+disabled on a headless host:
+
+```bash
+COMFY_PROGRESS_BRIDGE_AUTOSTART=0 python main.py --listen 127.0.0.1 --port 8188
+```
+
+Forward the normal ComfyUI HTTP port from the local computer:
+
+```bash
+ssh -N -L 8188:127.0.0.1:8188 user@remote-server
+```
+
+Then open `http://127.0.0.1:8188` locally. The plugin JavaScript is served through the same mapping,
+runs in the local browser, and receives progress through ComfyUI's existing WebSocket. No plugin,
+Python environment, PyQt6 process, SSH probe, or UDP port is needed on the local computer.
+
+For a reverse proxy instead of SSH, proxy both HTTP and WebSocket upgrades for the ComfyUI origin.
 
 ## Receive events
 
@@ -131,6 +175,8 @@ forwarded strings to 1024 characters, and error text to 4096 characters.
 
 - The default destination is loopback. Setting a non-loopback destination can expose prompt IDs, node IDs, progress, and error messages to that network destination.
 - UDP is intentionally best-effort. A dropped progress packet does not affect inference.
+- The browser panel preserves ComfyUI's normal WebSocket client routing. The separate UDP mirror
+  still contains the compact allowlist below and should remain on loopback unless explicitly secured.
 - The implementation wraps an internal ComfyUI method, `PromptServer.send_sync`. The wrapper is small and covered by tests, but upstream internal API changes may require an update.
 - This repository targets Python 3.10+ and current ComfyUI releases.
 

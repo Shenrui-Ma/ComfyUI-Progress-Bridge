@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "comfyui-progress-bridge"
 description = "Mirror selected ComfyUI execution events to an external visual progress monitor over UDP."
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -42,3 +42,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.setuptools.packages.find]
+include = ["comfyui_progress_bridge*"]
+
+[tool.setuptools.package-data]
+comfyui_progress_bridge = ["web/*.js", "web/*.mjs"]

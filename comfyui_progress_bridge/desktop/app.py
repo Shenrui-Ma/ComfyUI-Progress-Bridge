@@ -191,12 +191,39 @@ class DesktopMonitor(QObject):
         self.error_received.emit((generation, source_key, redact_error(message)))
 
     def apply_settings(self, settings: AppSettings) -> None:
-        """Stop old probes, reset reducer/UI state, then launch the new configuration."""
+        """Apply settings, restarting probes only when their transport changes."""
         if not isinstance(settings, AppSettings):
             return
-        self.stop()
+        def source_configuration(value: AppSettings) -> tuple[object, ...]:
+            return (
+                value.dock_enabled,
+                tuple(
+                    (
+                        endpoint.host,
+                        endpoint.port,
+                        endpoint.ssh_enabled,
+                        endpoint.ssh_host,
+                        endpoint.ssh_user,
+                        endpoint.ssh_port,
+                        endpoint.ssh_identity_file,
+                        endpoint.ssh_remote_python,
+                        endpoint.ssh_probe_path,
+                    )
+                    for endpoint in value.endpoints
+                ),
+            )
+
+        restart_sources = source_configuration(settings) != source_configuration(self.settings)
         self.settings = settings
         self.dispatcher.update_settings(settings)
+        if not restart_sources:
+            self.window.render(Reduction(self.reducer.state))
+            if self._source_errors:
+                self.window.show_source_error(next(reversed(self._source_errors.values())))
+            else:
+                self.window.clear_source_error()
+            return
+        self.stop()
         self.reducer = MonitorReducer(terminal_retention=30.0)
         self._source_errors.clear()
         self.window.clear_source_error()

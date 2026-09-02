@@ -9,4 +9,5 @@ except ImportError:  # Supports direct execution in tests and diagnostics.
 
 NODE_CLASS_MAPPINGS = _bridge_package.NODE_CLASS_MAPPINGS
 NODE_DISPLAY_NAME_MAPPINGS = _bridge_package.NODE_DISPLAY_NAME_MAPPINGS
+WEB_DIRECTORY = "./comfyui_progress_bridge/web"
 _bridge_package.install_comfyui_bridge()

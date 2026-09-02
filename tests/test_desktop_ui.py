@@ -524,6 +524,46 @@ def test_live_settings_restart_uses_complete_transport_key(app, tmp_path, monkey
     assert monitor.reducer.state == MonitorState()
 
 
+def test_language_only_settings_change_keeps_live_probe_and_monitor_state(
+    app, tmp_path, monkeypatch
+):
+    created = []
+
+    class FakeSource:
+        def __init__(self, argv, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+            created.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def join(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(desktop_app, "LocalSource", FakeSource)
+    initial = AppSettings(
+        language="zh-CN", endpoints=(EndpointConfig("127.0.0.1", 8191, "H3"),)
+    )
+    window = ProgressWindow(initial, store=SettingsStore(tmp_path / "settings.json"))
+    monitor = DesktopMonitor(window, initial)
+    monitor.start()
+    source = created[0]
+    previous_reducer = monitor.reducer
+
+    monitor.apply_settings(replace(initial, language="en-US"))
+
+    assert source.started
+    assert not source.stopped
+    assert created == [source]
+    assert monitor.reducer is previous_reducer
+
+
 def test_source_errors_are_queued_redacted_bounded_and_visible(app, tmp_path):
     settings = AppSettings(language="zh-CN")
     window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))

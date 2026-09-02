@@ -221,11 +221,55 @@ def test_install_bridge_preserves_original_delivery_and_mirrors_event():
     )
 
     assert result == "original-result"
-    assert FakePromptServer.calls[-1][2] == "frontend-client"
+    assert FakePromptServer.calls[0][2] == "frontend-client"
     payload, target = sock.sent[-1]
     assert target == ("127.0.0.1", 30999)
     assert json.loads(payload)["data"]["value"] == 3
     assert sock.blocking is False
+
+
+def test_install_bridge_preserves_comfyui_client_isolation():
+    class Server:
+        calls = []
+
+        def send_sync(self, event, data, sid=None):
+            self.calls.append((event, data, sid))
+            return "original-result"
+
+    sock = FakeSocket()
+    install_bridge(
+        Server,
+        8189,
+        udp_socket=sock,
+        instance_id="00000000-0000-0000-0000-000000000009",
+        clock=lambda: 42.5,
+    )
+
+    Server().send_sync(
+        "progress",
+        {
+            "prompt_id": "abc",
+            "node": "7",
+            "value": 3,
+            "max": 10,
+            "workflow": {"must": "not leak"},
+        },
+        "submitting-client",
+    )
+
+    assert Server.calls == [
+        (
+            "progress",
+            {
+                "prompt_id": "abc",
+                "node": "7",
+                "value": 3,
+                "max": 10,
+                "workflow": {"must": "not leak"},
+            },
+            "submitting-client",
+        )
+    ]
 
 
 def test_install_bridge_calls_original_before_best_effort_mirror():

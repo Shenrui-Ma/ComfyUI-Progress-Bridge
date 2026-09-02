@@ -9,6 +9,7 @@ from .desktop_launcher import launch_desktop
 
 NODE_CLASS_MAPPINGS: dict[str, type] = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {}
+WEB_DIRECTORY = "./web"
 
 
 def install_comfyui_bridge(
