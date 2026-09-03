@@ -39,94 +39,6 @@ workflow JSON, queue controls, prompts, models, or generated media.
 | Remote monitoring | SSH probe with bounded reconnect/shutdown behavior; no remote agent service required |
 | Packaging | Standard ComfyUI custom-node layout, PEP 621 wheel/sdist, browser assets, CLI entry point, GitHub Actions matrix |
 
-## Backend queue-complete notifications
-
-Backend notifications are part of this plugin. They do not require an agent framework, LLM,
-desktop window, browser tab, or notification workflow node.
-
-The trigger is mechanical:
-
-```text
-ComfyUI starts
-    └── plugin installs a PromptServer.send_sync observer
-            └── status.exec_info.queue_remaining > 0  → arm busy epoch
-                    └── first subsequent queue_remaining == 0
-                            └── enqueue exactly one completion notification
-                                    └── daemon worker sends Telegram / Weixin
-```
-
-Important semantics:
-
-- Initial zero does not notify.
-- Positive-to-positive changes remain inside the same busy epoch.
-- The first zero after a positive value notifies once and disarms the epoch.
-- Repeated zero, malformed data, booleans, negative counts, and unrelated events are ignored.
-- A later positive value starts a new epoch.
-- Multiple short epochs are counted even while the notification worker is busy.
-- Network work never runs in the `send_sync` callback.
-- Notification failures never change the original return value or stop ComfyUI execution.
-
-Telegram and Weixin have independent backend switches, targets, credentials, and test actions.
-QQ remains desktop-only.
-
-See [Backend notification setup](docs/backend-notifications.md) for local UI binding, headless server
-configuration, credential permissions, and remote-host examples.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    Q[ComfyUI execution queue] --> PS[PromptServer.send_sync]
-    PS --> WS[Original client WebSocket]
-    PS --> UDP[Bounded UDP schema v2 mirror]
-    PS --> BN[Busy-to-empty backend observer]
-    WS --> BP[Browser progress panel]
-    UDP --> DM[Desktop monitor / SSH probe]
-    BN --> W[Single daemon notification worker]
-    W --> TG[Telegram Bot API]
-    W --> WX[Weixin iLink sendmessage]
-```
-
-The original WebSocket call always runs first. The UDP mirror and notification observer are
-best-effort side effects that fail open.
-
-## Robustness by the numbers
-
-The following limits are enforced by code and regression tests rather than being deployment advice.
-
-| Metric | Enforced value / behavior |
-| --- | --- |
-| Automated regression suite | **428 tests** in the current release line |
-| CI runtime matrix | Python **3.10, 3.11, 3.12, and 3.13** |
-| UDP datagram ceiling | **8192 bytes** |
-| Prompt ID bound | **256 characters** |
-| Ordinary mirrored string bound | **1024 characters** |
-| Mirrored error-text bound | **4096 characters** |
-| Notification request/config/env ceiling | **1 MiB** |
-| Notification response ceiling | **256 KiB** |
-| HTTP response-header ceiling | **64 KiB** |
-| Notification total timeout | Configurable **1–30 seconds**, enforced as one monotonic deadline |
-| Weixin stale-context retry | At most **one** retry without the stale context token |
-| Weixin rate-limit backoff | Bounded **1 s, 2 s, 4 s** schedule within the same total deadline |
-| DNS behavior | One bounded daemon resolver with a single pending request slot |
-| Queue completion deduplication | Exactly once per observed busy epoch |
-| Worker blocking behavior | Completed epochs accumulate; they are not silently dropped |
-| Backend installation | Idempotent under serial and concurrent installation attempts |
-| Credential/config permissions | Owner-only **0600** files; app-created config directories use **0700** |
-| Symlink/TOCTOU protection | `lstat` + `O_NOFOLLOW` + `fstat` device/inode verification |
-| HTTP origin policy | HTTPS only, fixed official API hosts, redirects forbidden |
-| Failure policy | Monitoring and notification errors are isolated from inference and WebSocket delivery |
-
-Repository verification commands:
-
-```bash
-uv lock --check
-uv run pytest -q
-uv run ruff check .
-uv run python -m compileall -q comfyui_progress_bridge tests
-uv build
-```
-
 ## Installation
 
 ### ComfyUI custom-node installation
@@ -178,6 +90,57 @@ For a deterministic UI preview without a running ComfyUI instance:
 ```bash
 comfyui-progress-desktop --demo --show
 ```
+
+## Backend queue-complete notifications
+
+Backend notifications are part of this plugin. They do not require an agent framework, LLM,
+desktop window, browser tab, or notification workflow node.
+
+The trigger is mechanical:
+
+```text
+ComfyUI starts
+    └── plugin installs a PromptServer.send_sync observer
+            └── status.exec_info.queue_remaining > 0  → arm busy epoch
+                    └── first subsequent queue_remaining == 0
+                            └── enqueue exactly one completion notification
+                                    └── daemon worker sends Telegram / Weixin
+```
+
+Important semantics:
+
+- Initial zero does not notify.
+- Positive-to-positive changes remain inside the same busy epoch.
+- The first zero after a positive value notifies once and disarms the epoch.
+- Repeated zero, malformed data, booleans, negative counts, and unrelated events are ignored.
+- A later positive value starts a new epoch.
+- Multiple short epochs are counted even while the notification worker is busy.
+- Network work never runs in the `send_sync` callback.
+- Notification failures never change the original return value or stop ComfyUI execution.
+
+Telegram and Weixin have independent backend switches, targets, credentials, and test actions.
+QQ remains desktop-only.
+
+See [Backend notification setup](docs/backend-notifications.md) for local UI binding, headless server
+configuration, credential permissions, and remote-host examples.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Q[ComfyUI execution queue] --> PS[PromptServer.send_sync]
+    PS --> WS[Original client WebSocket]
+    PS --> UDP[Bounded UDP schema v2 mirror]
+    PS --> BN[Busy-to-empty backend observer]
+    WS --> BP[Browser progress panel]
+    UDP --> DM[Desktop monitor / SSH probe]
+    BN --> W[Single daemon notification worker]
+    W --> TG[Telegram Bot API]
+    W --> WX[Weixin iLink sendmessage]
+```
+
+The original WebSocket call always runs first. The UDP mirror and notification observer are
+best-effort side effects that fail open.
 
 ## Browser panel
 
@@ -332,6 +295,43 @@ system HTTPS proxy.
   responses.
 - The original `PromptServer.send_sync` is called before any monitoring or notification work, with
   positional/keyword arguments, return value, and client routing preserved.
+
+## Robustness by the numbers
+
+The following limits are enforced by code and regression tests rather than being deployment advice.
+
+| Metric | Enforced value / behavior |
+| --- | --- |
+| Automated regression suite | **428 tests** in the current release line |
+| CI runtime matrix | Python **3.10, 3.11, 3.12, and 3.13** |
+| UDP datagram ceiling | **8192 bytes** |
+| Prompt ID bound | **256 characters** |
+| Ordinary mirrored string bound | **1024 characters** |
+| Mirrored error-text bound | **4096 characters** |
+| Notification request/config/env ceiling | **1 MiB** |
+| Notification response ceiling | **256 KiB** |
+| HTTP response-header ceiling | **64 KiB** |
+| Notification total timeout | Configurable **1–30 seconds**, enforced as one monotonic deadline |
+| Weixin stale-context retry | At most **one** retry without the stale context token |
+| Weixin rate-limit backoff | Bounded **1 s, 2 s, 4 s** schedule within the same total deadline |
+| DNS behavior | One bounded daemon resolver with a single pending request slot |
+| Queue completion deduplication | Exactly once per observed busy epoch |
+| Worker blocking behavior | Completed epochs accumulate; they are not silently dropped |
+| Backend installation | Idempotent under serial and concurrent installation attempts |
+| Credential/config permissions | Owner-only **0600** files; app-created config directories use **0700** |
+| Symlink/TOCTOU protection | `lstat` + `O_NOFOLLOW` + `fstat` device/inode verification |
+| HTTP origin policy | HTTPS only, fixed official API hosts, redirects forbidden |
+| Failure policy | Monitoring and notification errors are isolated from inference and WebSocket delivery |
+
+Repository verification commands:
+
+```bash
+uv lock --check
+uv run pytest -q
+uv run ruff check .
+uv run python -m compileall -q comfyui_progress_bridge tests
+uv build
+```
 
 ## Troubleshooting
 

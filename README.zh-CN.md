@@ -38,91 +38,6 @@
 | 远程监控 | 带有界重连/关闭行为的 SSH 探针；无需远程常驻 Agent 服务 |
 | 打包发布 | 标准 ComfyUI 自定义节点布局、PEP 621 wheel/sdist、浏览器资源、CLI 入口、GitHub Actions 矩阵 |
 
-## 后端队列完成通知
-
-后端通知属于本插件自身，不需要 Agent 框架、LLM、桌面窗口、浏览器标签页或通知工作流节点。
-
-触发过程完全机械化：
-
-```text
-ComfyUI 启动
-    └── 插件安装 PromptServer.send_sync 观察器
-            └── status.exec_info.queue_remaining > 0  → 当前 busy epoch 进入 armed 状态
-                    └── 后续第一次 queue_remaining == 0
-                            └── 仅入队一次完成通知
-                                    └── daemon worker 发送 Telegram / 微信
-```
-
-关键语义：
-
-- 初始值为 0 时不通知。
-- 正数变为其他正数仍属于同一个 busy epoch。
-- 正数之后第一次出现 0 时通知一次，并解除 armed 状态。
-- 重复的 0、畸形数据、布尔值、负数和无关事件都会被忽略。
-- 之后再次出现正数时开启新的 epoch。
-- 即使通知 worker 正忙，多个短 epoch 也会被累计，不会静默丢失。
-- 网络请求永远不会在 `send_sync` 回调线程执行。
-- 通知失败不会改变原始返回值，也不会阻断 ComfyUI 执行。
-
-Telegram 与微信拥有独立的后端开关、目标、凭据和测试动作。QQ 仅保留在桌面模式。
-
-本地 UI 绑定、无头服务器配置、凭据权限和远程主机示例见
-[后端通知设置](docs/backend-notifications.md)。
-
-## 架构
-
-```mermaid
-flowchart LR
-    Q[ComfyUI 执行队列] --> PS[PromptServer.send_sync]
-    PS --> WS[原始客户端 WebSocket]
-    PS --> UDP[有界 UDP schema v2 镜像]
-    PS --> BN[busy-to-empty 后端观察器]
-    WS --> BP[浏览器进度面板]
-    UDP --> DM[桌面监视器 / SSH 探针]
-    BN --> W[单一 daemon 通知 worker]
-    W --> TG[Telegram Bot API]
-    W --> WX[微信 iLink sendmessage]
-```
-
-原始 WebSocket 调用始终最先执行。UDP 镜像和通知观察器都是 fail-open 的尽力而为副作用。
-
-## 量化鲁棒性指标
-
-下列数值由代码和回归测试强制执行，而不是仅供参考的部署建议。
-
-| 指标 | 强制值 / 行为 |
-| --- | --- |
-| 自动化回归测试 | 当前版本线共 **428 项测试** |
-| CI Python 矩阵 | Python **3.10、3.11、3.12、3.13** |
-| UDP 数据报上限 | **8192 bytes** |
-| Prompt ID 上限 | **256 字符** |
-| 普通镜像字符串上限 | **1024 字符** |
-| 镜像错误文本上限 | **4096 字符** |
-| 通知请求/配置/env 文件上限 | **1 MiB** |
-| 通知响应体上限 | **256 KiB** |
-| HTTP 响应头上限 | **64 KiB** |
-| 通知总超时 | 可配置 **1–30 秒**，以单一 monotonic deadline 强制执行 |
-| 微信 stale context 重试 | 最多 **一次**去除 stale context token 的重试 |
-| 微信限流退避 | 在同一总 deadline 内执行有界 **1 秒、2 秒、4 秒**退避 |
-| DNS 行为 | 一个有界 daemon resolver，最多容纳一个待处理请求 |
-| 队列完成去重 | 每个已观察到的 busy epoch 恰好一次 |
-| Worker 阻塞行为 | 已完成 epoch 会累计，不会静默丢失 |
-| 后端安装 | 串行与并发安装均保持幂等 |
-| 凭据/配置权限 | 文件仅允许所有者访问，权限 **0600**；应用创建的配置目录使用 **0700** |
-| Symlink/TOCTOU 防护 | `lstat` + `O_NOFOLLOW` + `fstat` 设备号/inode 复核 |
-| HTTP 来源策略 | 仅 HTTPS、固定官方 API 主机、禁止重定向 |
-| 故障策略 | 监控和通知错误与推理、WebSocket 投递隔离 |
-
-仓库验证命令：
-
-```bash
-uv lock --check
-uv run pytest -q
-uv run ruff check .
-uv run python -m compileall -q comfyui_progress_bridge tests
-uv build
-```
-
 ## 安装
 
 ### 安装为 ComfyUI 自定义节点
@@ -174,6 +89,54 @@ comfyui-progress-desktop --show
 ```bash
 comfyui-progress-desktop --demo --show
 ```
+
+## 后端队列完成通知
+
+后端通知属于本插件自身，不需要 Agent 框架、LLM、桌面窗口、浏览器标签页或通知工作流节点。
+
+触发过程完全机械化：
+
+```text
+ComfyUI 启动
+    └── 插件安装 PromptServer.send_sync 观察器
+            └── status.exec_info.queue_remaining > 0  → 当前 busy epoch 进入 armed 状态
+                    └── 后续第一次 queue_remaining == 0
+                            └── 仅入队一次完成通知
+                                    └── daemon worker 发送 Telegram / 微信
+```
+
+关键语义：
+
+- 初始值为 0 时不通知。
+- 正数变为其他正数仍属于同一个 busy epoch。
+- 正数之后第一次出现 0 时通知一次，并解除 armed 状态。
+- 重复的 0、畸形数据、布尔值、负数和无关事件都会被忽略。
+- 之后再次出现正数时开启新的 epoch。
+- 即使通知 worker 正忙，多个短 epoch 也会被累计，不会静默丢失。
+- 网络请求永远不会在 `send_sync` 回调线程执行。
+- 通知失败不会改变原始返回值，也不会阻断 ComfyUI 执行。
+
+Telegram 与微信拥有独立的后端开关、目标、凭据和测试动作。QQ 仅保留在桌面模式。
+
+本地 UI 绑定、无头服务器配置、凭据权限和远程主机示例见
+[后端通知设置](docs/backend-notifications.md)。
+
+## 架构
+
+```mermaid
+flowchart LR
+    Q[ComfyUI 执行队列] --> PS[PromptServer.send_sync]
+    PS --> WS[原始客户端 WebSocket]
+    PS --> UDP[有界 UDP schema v2 镜像]
+    PS --> BN[busy-to-empty 后端观察器]
+    WS --> BP[浏览器进度面板]
+    UDP --> DM[桌面监视器 / SSH 探针]
+    BN --> W[单一 daemon 通知 worker]
+    W --> TG[Telegram Bot API]
+    W --> WX[微信 iLink sendmessage]
+```
+
+原始 WebSocket 调用始终最先执行。UDP 镜像和通知观察器都是 fail-open 的尽力而为副作用。
 
 ## 浏览器面板
 
@@ -318,6 +281,43 @@ Token 保存在单独的固定键 `KEY=value` 文件中，解析器永远不会 
 - API 请求使用固定 HTTPS 来源、有界 body/header、禁止重定向和单一 monotonic deadline。
 - 用户可见错误和启动日志不会包含 token、目标、context token 或原始 API 响应。
 - 原始 `PromptServer.send_sync` 总是最先执行，并保留位置/关键字参数、返回值和客户端路由。
+
+## 量化鲁棒性指标
+
+下列数值由代码和回归测试强制执行，而不是仅供参考的部署建议。
+
+| 指标 | 强制值 / 行为 |
+| --- | --- |
+| 自动化回归测试 | 当前版本线共 **428 项测试** |
+| CI Python 矩阵 | Python **3.10、3.11、3.12、3.13** |
+| UDP 数据报上限 | **8192 bytes** |
+| Prompt ID 上限 | **256 字符** |
+| 普通镜像字符串上限 | **1024 字符** |
+| 镜像错误文本上限 | **4096 字符** |
+| 通知请求/配置/env 文件上限 | **1 MiB** |
+| 通知响应体上限 | **256 KiB** |
+| HTTP 响应头上限 | **64 KiB** |
+| 通知总超时 | 可配置 **1–30 秒**，以单一 monotonic deadline 强制执行 |
+| 微信 stale context 重试 | 最多 **一次**去除 stale context token 的重试 |
+| 微信限流退避 | 在同一总 deadline 内执行有界 **1 秒、2 秒、4 秒**退避 |
+| DNS 行为 | 一个有界 daemon resolver，最多容纳一个待处理请求 |
+| 队列完成去重 | 每个已观察到的 busy epoch 恰好一次 |
+| Worker 阻塞行为 | 已完成 epoch 会累计，不会静默丢失 |
+| 后端安装 | 串行与并发安装均保持幂等 |
+| 凭据/配置权限 | 文件仅允许所有者访问，权限 **0600**；应用创建的配置目录使用 **0700** |
+| Symlink/TOCTOU 防护 | `lstat` + `O_NOFOLLOW` + `fstat` 设备号/inode 复核 |
+| HTTP 来源策略 | 仅 HTTPS、固定官方 API 主机、禁止重定向 |
+| 故障策略 | 监控和通知错误与推理、WebSocket 投递隔离 |
+
+仓库验证命令：
+
+```bash
+uv lock --check
+uv run pytest -q
+uv run ruff check .
+uv run python -m compileall -q comfyui_progress_bridge tests
+uv build
+```
 
 ## 故障排查
 
