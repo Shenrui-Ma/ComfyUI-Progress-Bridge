@@ -21,7 +21,7 @@ workflow JSON, queue controls, prompts, models, or generated media.
 
 ## Demo video
 
-https://github.com/user-attachments/assets/79fc57c7-43c5-4ed1-97ac-cbbad0b59fa9
+https://github.com/user-attachments/assets/9431ad9d-0a61-4600-bb0c-75bd17643257
 
 _37-second English v0.2.0 walkthrough._
 
