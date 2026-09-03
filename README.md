@@ -23,7 +23,7 @@ workflow JSON, queue controls, prompts, models, or generated media.
 
 https://github.com/user-attachments/assets/79fc57c7-43c5-4ed1-97ac-cbbad0b59fa9
 
-_37-second English walkthrough._
+_37-second English v0.2.0 walkthrough._
 
 <p align="center">
   <img src="docs/images/comfyui-progress-dock.png" width="400" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
