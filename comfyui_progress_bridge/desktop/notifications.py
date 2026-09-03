@@ -24,8 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from comfyui_progress_bridge.monitor.models import EndpointId, Reduction
-
+from ..monitor.models import EndpointId, Reduction
 from .settings import AppSettings, NotificationConfig, config_directory
 
 MAX_RESPONSE_BYTES = 262_144

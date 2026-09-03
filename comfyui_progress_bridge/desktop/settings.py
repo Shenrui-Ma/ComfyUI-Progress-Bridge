@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from comfyui_progress_bridge.monitor.source import build_ssh_argv
+from ..monitor.source import build_ssh_argv
 
 SCHEMA_VERSION = 4
 MAX_SETTINGS_BYTES = 1_048_576

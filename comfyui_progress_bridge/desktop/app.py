@@ -13,7 +13,7 @@ from uuid import UUID
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
-from comfyui_progress_bridge.monitor.models import (
+from ..monitor.models import (
     EndpointId,
     EndpointState,
     EventEnvelope,
@@ -24,9 +24,8 @@ from comfyui_progress_bridge.monitor.models import (
     TaskState,
     Transition,
 )
-from comfyui_progress_bridge.monitor.reducer import MonitorReducer
-from comfyui_progress_bridge.monitor.source import LocalSource, SSHSource, redact_error
-
+from ..monitor.reducer import MonitorReducer
+from ..monitor.source import LocalSource, SSHSource, redact_error
 from .audio import CompletionAudio
 from .notifications import CompletionDispatcher, NotificationSender
 from .settings import AppSettings, EndpointConfig, SettingsStore

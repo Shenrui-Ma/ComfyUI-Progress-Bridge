@@ -45,13 +45,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from comfyui_progress_bridge.monitor.models import (
+from ..monitor.models import (
     MonitorState,
     Reduction,
     TaskKey,
     TaskState,
 )
-
 from .i18n import LANGUAGES, Translator, localized_result
 from .settings import (
     AppSettings,

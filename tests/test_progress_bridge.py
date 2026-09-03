@@ -1,6 +1,7 @@
 import json
 import math
 import runpy
+import subprocess
 import sys
 import threading
 import types
@@ -61,6 +62,58 @@ def test_resolve_target_defaults_to_loopback_and_allows_port_override():
 def test_resolve_target_rejects_hostnames_to_avoid_event_path_dns():
     with pytest.raises(ValueError, match="numeric IPv4"):
         resolve_target(8189, {"COMFY_PROGRESS_BRIDGE_HOST": "monitor.example.com"})
+
+
+def test_repository_root_loads_as_an_isolated_comfyui_custom_node(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    script = f"""
+import importlib.util
+import importlib.abc
+import os
+import sys
+import types
+
+os.environ['COMFY_PROGRESS_BRIDGE_AUTOSTART'] = '0'
+os.environ['COMFYUI_PROGRESS_CONFIG_DIR'] = {str(tmp_path)!r}
+comfy = types.ModuleType('comfy')
+cli_args = types.ModuleType('comfy.cli_args')
+cli_args.args = types.SimpleNamespace(port=8189)
+comfy.cli_args = cli_args
+server = types.ModuleType('server')
+class PromptServer:
+    def send_sync(self, event, data, sid=None):
+        return None
+server.PromptServer = PromptServer
+sys.modules['comfy'] = comfy
+sys.modules['comfy.cli_args'] = cli_args
+sys.modules['server'] = server
+class BlockTopLevelPackage(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'comfyui_progress_bridge' or fullname.startswith('comfyui_progress_bridge.'):
+            raise ModuleNotFoundError(fullname)
+        return None
+sys.meta_path.insert(0, BlockTopLevelPackage())
+root = {str(root)!r}
+spec = importlib.util.spec_from_file_location(
+    'isolated_custom_node',
+    root + '/__init__.py',
+    submodule_search_locations=[root],
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+assert module.WEB_DIRECTORY == './comfyui_progress_bridge/web'
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("value", ["0", "65536", "not-a-number"])
