@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 from dataclasses import replace
@@ -70,6 +71,11 @@ def env_file(tmp_path, **values):
     return str(path)
 
 
+def _write_private_context(path, payload):
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+
+
 def settings_for(tmp_path, *, telegram=None, weixin=None, qq=None, timeout=10):
     config = NotificationConfig(
         enabled=True,
@@ -118,7 +124,7 @@ def test_weixin_reuses_persisted_context_and_only_calls_sendmessage(tmp_path, mo
     )
     env_file(tmp_path, WEIXIN_TOKEN="wx-secret")
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "persisted-context-secret"}))
+    _write_private_context(context, {"peer": "persisted-context-secret"})
     transport = FakeTransport([response({"ret": 0})])
     sender = NotificationSender(transport)
     settings = settings_for(
@@ -146,7 +152,7 @@ def test_weixin_reuses_persisted_context_and_only_calls_sendmessage(tmp_path, mo
         "msg": {
             "from_user_id": "",
             "to_user_id": "peer",
-            "client_id": "c" * 32,
+            "client_id": "comfy-progress-weixin-" + "c" * 32,
             "message_type": 2,
             "message_state": 2,
             "item_list": [{"type": 1, "text_item": {"text": "完成"}}],
@@ -163,9 +169,7 @@ def test_weixin_reuses_persisted_context_and_only_calls_sendmessage(tmp_path, mo
     ],
     ids=["session-expired-minus-14", "stale-minus-2-unknown-error"],
 )
-def test_weixin_stale_context_retries_once_without_token(
-    tmp_path, monkeypatch, stale_response
-):
+def test_weixin_stale_context_retries_once_without_token(tmp_path, monkeypatch, stale_response):
     monkeypatch.setattr(
         "comfyui_progress_bridge.desktop.notifications.secrets.token_hex", lambda _n: "c" * 32
     )
@@ -174,7 +178,7 @@ def test_weixin_stale_context_retries_once_without_token(
     )
     env_file(tmp_path, WEIXIN_TOKEN="wx-test-token")
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "persisted-test-context"}))
+    _write_private_context(context, {"peer": "persisted-test-context"})
     transport = FakeTransport([response(stale_response), response({"ret": 0})])
     ticks = iter([0.0, 0.0, 1.25])
     sender = NotificationSender(transport, monotonic=lambda: next(ticks))
@@ -202,11 +206,105 @@ def test_weixin_stale_context_retries_once_without_token(
     assert second["timeout"] == pytest.approx(0.75)
 
 
-def test_weixin_unrelated_minus_2_does_not_retry(tmp_path):
+def test_weixin_accepts_zero_errcode_when_ret_is_omitted(tmp_path):
     env_file(tmp_path, WEIXIN_TOKEN="wx-test-token")
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "persisted-test-context"}))
-    transport = FakeTransport([response({"ret": -2, "errmsg": "rate limited"})])
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport([response({"errcode": 0})])
+    settings = settings_for(
+        tmp_path,
+        weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
+    )
+
+    result = NotificationSender(transport).send_platform("weixin", "done", settings)
+
+    assert result == SafeResult(True, "sent", "Weixin notification sent", "weixin")
+    assert len(transport.calls) == 1
+
+
+def test_weixin_accepts_live_message_id_only_success_response(tmp_path):
+    """iLink sendmessage currently returns only a message_id on success."""
+
+    env_file(tmp_path, WEIXIN_TOKEN="wx-test-token")
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport([response({"message_id": "server-assigned-id"})])
+    settings = settings_for(
+        tmp_path,
+        weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
+    )
+
+    result = NotificationSender(transport).send_platform("weixin", "done", settings)
+
+    assert result == SafeResult(True, "sent", "Weixin notification sent", "weixin")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "rate_limit_response",
+    [{"ret": -2, "errmsg": "rate limited"}, {"errcode": -2, "errmsg": "frequency limit"}],
+)
+def test_weixin_rate_limit_retries_with_bounded_backoff_and_same_client_id(
+    tmp_path, rate_limit_response
+):
+    env_file(tmp_path, WEIXIN_TOKEN="wx-test-token")
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport(
+        [response(rate_limit_response), response(rate_limit_response), response({"ret": 0})]
+    )
+    sleeps = []
+    sender = NotificationSender(transport, monotonic=lambda: 0.0, sleeper=sleeps.append)
+    settings = settings_for(
+        tmp_path,
+        weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
+        timeout=2,
+    )
+
+    result = sender.send_platform("weixin", "done", settings)
+
+    assert result == SafeResult(True, "sent", "Weixin notification sent", "weixin")
+    assert sleeps == [1.0, 2.0]
+    messages = [call[2]["json_body"]["msg"] for call in transport.calls]
+    assert len(messages) == 3
+    assert len({message["client_id"] for message in messages}) == 1
+    assert all(message["context_token"] == "persisted-test-context" for message in messages)
+
+
+def test_weixin_rate_limit_retry_is_capped_and_keeps_result_code_api(tmp_path):
+    env_file(tmp_path, WEIXIN_TOKEN="wx-test-token")
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport([response({"ret": -2, "errmsg": "rate limited"}) for _ in range(4)])
+    sleeps = []
+    sender = NotificationSender(transport, monotonic=lambda: 0.0, sleeper=sleeps.append)
+    settings = settings_for(
+        tmp_path,
+        weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
+        timeout=10,
+    )
+
+    result = sender.send_platform("weixin", "done", settings)
+
+    assert result == SafeResult(False, "api_error", "Weixin rejected the request", "weixin")
+    assert len(transport.calls) == 4
+    assert sleeps == [1.0, 2.0, 4.0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ret": -14, "errcode": 0},
+        {"ret": 0, "errcode": -14},
+        {"ret": -2, "errcode": 0, "errmsg": "unknown error"},
+        {"ret": 0, "errcode": -2, "errmsg": "Unknown Error"},
+    ],
+)
+def test_weixin_mixed_contradictory_codes_fail_closed_without_retry(tmp_path, payload):
+    env_file(tmp_path, **{"WEIXIN_TOKEN": "wx-test-token"})
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport([response(payload)])
     settings = settings_for(
         tmp_path,
         weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
@@ -215,6 +313,72 @@ def test_weixin_unrelated_minus_2_does_not_retry(tmp_path):
     result = NotificationSender(transport).send_platform("weixin", "done", settings)
 
     assert result == SafeResult(False, "api_error", "Weixin rejected the request", "weixin")
+    assert len(transport.calls) == 1
+    assert "context_token" in transport.calls[0][2]["json_body"]["msg"]
+
+
+def test_weixin_client_id_matches_known_working_ilink_shape(tmp_path):
+    env_file(tmp_path, **{"WEIXIN_TOKEN": "wx-test-token"})
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport([response({"ret": 0})])
+    settings = settings_for(
+        tmp_path,
+        weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
+    )
+
+    assert NotificationSender(transport).send_platform("weixin", "done", settings).ok
+
+    client_id = transport.calls[0][2]["json_body"]["msg"]["client_id"]
+    assert re.fullmatch(r"comfy-progress-weixin-[0-9a-f]{32}", client_id)
+
+
+def test_weixin_rate_limit_backoff_does_not_cross_notification_deadline(tmp_path):
+    env_file(tmp_path, WEIXIN_TOKEN="wx-test-token")
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport([response({"errcode": -2, "errmsg": "frequency limit"})])
+    now = {"value": 0.0, "calls": 0}
+    sleeps = []
+
+    def monotonic():
+        value = now["value"]
+        now["calls"] += 1
+        if now["calls"] == 1:
+            now["value"] = 0.95
+        return value
+
+    def sleep(delay):
+        sleeps.append(delay)
+        now["value"] += delay
+
+    sender = NotificationSender(transport, monotonic=monotonic, sleeper=sleep)
+    settings = settings_for(
+        tmp_path,
+        weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
+        timeout=1,
+    )
+
+    result = sender.send_platform("weixin", "done", settings)
+
+    assert result == SafeResult(False, "timeout", "Network request timed out", "weixin")
+    assert len(transport.calls) == 1
+    assert sleeps == pytest.approx([0.05])
+
+
+def test_weixin_prepare_failed_is_missing_context_token_without_retry(tmp_path):
+    env_file(tmp_path, WEIXIN_TOKEN="wx-test-token")
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "persisted-test-context"})
+    transport = FakeTransport([response({"ret": -2, "errmsg": "prepare failed"})])
+    settings = settings_for(
+        tmp_path,
+        weixin=WeixinNotificationConfig(True, "acct", "peer", str(context)),
+    )
+
+    result = NotificationSender(transport).send_platform("weixin", "done", settings)
+
+    assert result.code == "missing_context_token"
     assert len(transport.calls) == 1
 
 
@@ -228,7 +392,7 @@ def test_weixin_tokenless_retry_failure_is_stable_and_secret_free(tmp_path):
     )
     env_file(tmp_path, WEIXIN_TOKEN=sensitive_values[1])
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({sensitive_values[3]: sensitive_values[0]}))
+    _write_private_context(context, {sensitive_values[3]: sensitive_values[0]})
     transport = FakeTransport(
         [
             response({"errcode": -14}),
@@ -250,10 +414,9 @@ def test_weixin_tokenless_retry_failure_is_stable_and_secret_free(tmp_path):
     second_message = transport.calls[1][2]["json_body"]["msg"]
     assert first_message["context_token"] == sensitive_values[0]
     assert "context_token" not in second_message
-    assert (
-        {key: value for key, value in first_message.items() if key != "context_token"}
-        == second_message
-    )
+    assert {
+        key: value for key, value in first_message.items() if key != "context_token"
+    } == second_message
     assert all(
         value not in repr(result) and value not in result.message for value in sensitive_values
     )
@@ -393,11 +556,7 @@ def test_malformed_and_oversized_responses_are_rejected_without_body_echo(tmp_pa
 
 def reduction(endpoint, *, busy, transitions=()):
     busy_epoch = max(
-        (
-            item.busy_epoch or 0
-            for item in transitions
-            if item.kind == "queue_completed"
-        ),
+        (item.busy_epoch or 0 for item in transitions if item.kind == "queue_completed"),
         default=0,
     )
     endpoint_state = EndpointState(endpoint, online=True, busy=busy, busy_epoch=busy_epoch)

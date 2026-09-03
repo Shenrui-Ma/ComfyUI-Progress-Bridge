@@ -26,12 +26,20 @@ from typing import Any, Protocol
 
 from comfyui_progress_bridge.monitor.models import EndpointId, Reduction
 
-from .settings import AppSettings, NotificationConfig
+from .settings import AppSettings, NotificationConfig, config_directory
 
 MAX_RESPONSE_BYTES = 262_144
 MAX_ENV_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 1_048_576
 MAX_HTTP_HEADER_BYTES = 64 * 1024
+WEIXIN_RATE_LIMIT_BACKOFF = (1.0, 2.0, 4.0)
+WEIXIN_RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "rate limited",
+    "frequency limit",
+    "too frequent",
+    "too many requests",
+)
 _ALLOWED_ENV = frozenset(
     {
         "TELEGRAM_BOT_TOKEN",
@@ -252,12 +260,15 @@ class FixedOriginHttpsTransport:
         raw = self.proxy_url
         if raw is None:
             no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
-            bypass = urllib.request.proxy_bypass_environment(  # type: ignore[attr-defined]
-                target_host, {"no": no_proxy}
-            )
+            if no_proxy:
+                bypass = urllib.request.proxy_bypass_environment(  # type: ignore[attr-defined]
+                    target_host, {"no": no_proxy}
+                )
+            else:
+                bypass = urllib.request.proxy_bypass(target_host)
             if bypass:
                 return None
-            raw = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or ""
+            raw = urllib.request.getproxies().get("https", "")
         if not raw:
             return None
         if raw != raw.strip() or any(ord(char) < 0x20 or ord(char) == 0x7F for char in raw):
@@ -481,27 +492,61 @@ def _json_response(response: HttpResponse) -> dict[str, Any] | None:
 
 
 def _is_weixin_success(data: dict[str, Any]) -> bool:
-    ret = data.get("ret")
-    if type(ret) is not int or ret != 0:
+    codes = _weixin_error_codes(data)
+    if codes is None:
         return False
-    if "errcode" not in data:
-        return True
-    errcode = data["errcode"]
-    return type(errcode) is int and errcode == 0
+    if codes:
+        return all(value == 0 for value in codes)
+    message_id = data.get("message_id")
+    return (
+        type(message_id) is int
+        and message_id >= 0
+        or type(message_id) is str
+        and 0 < len(message_id) <= 256
+    )
+
+
+def _weixin_error_codes(data: dict[str, Any]) -> tuple[int, ...] | None:
+    values = tuple(data[name] for name in ("ret", "errcode") if name in data)
+    if any(type(value) is not int for value in values):
+        return None
+    return values
+
+
+def _weixin_uniform_error(data: dict[str, Any], code: int) -> bool:
+    values = _weixin_error_codes(data)
+    return values is not None and bool(values) and all(value == code for value in values)
+
+
+def _weixin_errmsg(data: dict[str, Any]) -> str:
+    value = data.get("errmsg")
+    return value.casefold().strip() if type(value) is str else ""
 
 
 def _is_weixin_stale_session(data: dict[str, Any]) -> bool:
-    codes = {name: data[name] for name in ("ret", "errcode") if name in data}
-    if not codes or any(type(value) is not int for value in codes.values()):
-        return False
-    if all(value == -14 for value in codes.values()):
+    if _weixin_uniform_error(data, -14):
         return True
+    if not _weixin_uniform_error(data, -2):
+        return False
     errmsg = data.get("errmsg")
-    return (
-        codes == {"ret": -2, "errcode": -2}
-        and type(errmsg) is str
-        and errmsg.casefold() == "unknown error"
-    )
+    if errmsg is None:
+        return True
+    return type(errmsg) is str and _weixin_errmsg(data) in {"", "unknown error"}
+
+
+def _is_weixin_prepare_failed(data: dict[str, Any]) -> bool:
+    return _weixin_uniform_error(data, -2) and _weixin_errmsg(data) == "prepare failed"
+
+
+def _is_weixin_rate_limit(data: dict[str, Any]) -> bool:
+    """Recognize live iLink throttling without conflating its stale-context variant."""
+
+    if _is_weixin_stale_session(data) or _is_weixin_prepare_failed(data):
+        return False
+    if not _weixin_uniform_error(data, -2):
+        return False
+    errmsg = _weixin_errmsg(data)
+    return bool(errmsg) and any(marker in errmsg for marker in WEIXIN_RATE_LIMIT_MARKERS)
 
 
 def load_credentials(path: str, environ: dict[str, str] | None = None) -> dict[str, str]:
@@ -591,8 +636,10 @@ class NotificationSender:
         *,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self.clock = clock
+        self.sleeper = sleeper
         if transport is None:
             self.monotonic = monotonic
             self.transport = UrllibTransport(monotonic=monotonic)
@@ -731,15 +778,26 @@ class NotificationSender:
         configured = config.weixin.context_store.strip()
         if configured:
             path = Path(configured).expanduser()
-            return contained(path) if path.is_dir() else path
-        return contained(Path.home() / ".hermes" / "weixin" / "accounts")
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                return path
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError("Weixin context store must not be a symlink")
+            return contained(path) if stat.S_ISDIR(metadata.st_mode) else path
+        return contained(config_directory() / "weixin")
 
     @classmethod
     def _context_token(cls, config: NotificationConfig, account_id: str, peer: str) -> str:
         try:
             path = cls._context_path(config, account_id)
             metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or (hasattr(os, "getuid") and metadata.st_uid != os.getuid())
+            ):
                 return ""
             if metadata.st_size > MAX_ENV_BYTES:
                 return ""
@@ -749,7 +807,9 @@ class NotificationSender:
                 opened = os.fstat(descriptor)
                 if (
                     not stat.S_ISREG(opened.st_mode)
+                    or stat.S_IMODE(opened.st_mode) != 0o600
                     or opened.st_size > MAX_ENV_BYTES
+                    or (hasattr(os, "getuid") and opened.st_uid != os.getuid())
                     or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
                 ):
                     return ""
@@ -812,7 +872,7 @@ class NotificationSender:
             "msg": {
                 "from_user_id": "",
                 "to_user_id": target,
-                "client_id": secrets.token_hex(16),
+                "client_id": f"comfy-progress-weixin-{secrets.token_hex(16)}",
                 "message_type": 2,
                 "message_state": 2,
                 "item_list": [{"type": 1, "text_item": {"text": text[:4096]}}],
@@ -840,16 +900,46 @@ class NotificationSender:
                 max_response_bytes=MAX_RESPONSE_BYTES,
             )
 
-        response = send(payload)
-        data = _json_response(response)
-        if data is not None and _is_weixin_stale_session(data):
-            retry_message = dict(payload["msg"])
-            retry_message.pop("context_token")
-            response = send({"base_info": payload["base_info"], "msg": retry_message})
-            data = _json_response(response)
-        if data is None or not _is_weixin_success(data):
+        body = payload
+        stale_retried = False
+        rate_limit_retries = 0
+        while True:
+            data = _json_response(send(body))
+            if data is not None and _is_weixin_success(data):
+                return SafeResult(True, "sent", "Weixin notification sent", platform)
+            if (
+                data is not None
+                and not stale_retried
+                and "context_token" in body["msg"]
+                and _is_weixin_stale_session(data)
+            ):
+                retry_message = dict(body["msg"])
+                retry_message.pop("context_token")
+                body = {"base_info": body["base_info"], "msg": retry_message}
+                stale_retried = True
+                continue
+            if (
+                data is not None
+                and _is_weixin_prepare_failed(data)
+            ):
+                return _safe_failure(
+                    platform,
+                    "missing_context_token",
+                    "Weixin context token is not ready; ask the user to send a message first",
+                )
+            if (
+                data is not None
+                and rate_limit_retries < len(WEIXIN_RATE_LIMIT_BACKOFF)
+                and _is_weixin_rate_limit(data)
+            ):
+                delay = min(
+                    WEIXIN_RATE_LIMIT_BACKOFF[rate_limit_retries], self._remaining(deadline)
+                )
+                rate_limit_retries += 1
+                self.sleeper(delay)
+                self._remaining(deadline)
+                continue
             return _safe_failure(platform, "api_error", "Weixin rejected the request")
-        return SafeResult(True, "sent", "Weixin notification sent", platform)
 
     def _qq_access_token(
         self,

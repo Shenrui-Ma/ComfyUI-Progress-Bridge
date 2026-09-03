@@ -28,6 +28,11 @@ class PlainTlsContext:
         return sock
 
 
+def _write_private_context(path, payload):
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+
+
 def serve_proxy(connect_reply=b"HTTP/1.1 200 Connection Established\r\n\r\n", *, drip=0):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
@@ -92,9 +97,7 @@ def request(transport, timeout=1):
 def test_https_proxy_connect_is_exact_and_auth_is_proxy_only():
     port, captured, worker = serve_proxy()
     credentials = base64.b64encode(b"proxy-user:proxy-pass").decode("ascii")
-    transport, context = proxy_transport(
-        port, f"http://proxy-user:proxy-pass@127.0.0.1:{port}"
-    )
+    transport, context = proxy_transport(port, f"http://proxy-user:proxy-pass@127.0.0.1:{port}")
     assert request(transport) == HttpResponse(200, b"{}")
     worker.join(1)
     assert captured[0] == (
@@ -106,7 +109,6 @@ def test_https_proxy_connect_is_exact_and_auth_is_proxy_only():
     assert b"Proxy-Authorization" not in captured[1]
     assert ("Authorization: Bearer origin-" + "secret\r\n").encode() in captured[1]
     assert context.server_names == ["api.telegram.org"]
-
 
 
 def test_https_proxy_environment_default_honors_no_proxy(monkeypatch):
@@ -130,17 +132,36 @@ def test_https_proxy_environment_default_honors_no_proxy(monkeypatch):
         assert host == "api.telegram.org"
         raise OSError("direct resolution selected")
 
-    bypassed = FixedOriginHttpsTransport(
-        resolver=bypass_resolver, ssl_context=PlainTlsContext()
-    )
+    bypassed = FixedOriginHttpsTransport(resolver=bypass_resolver, ssl_context=PlainTlsContext())
     with pytest.raises(OSError, match="direct resolution selected"):
         request(bypassed)
 
 
-def test_https_proxy_rejects_non_2xx_and_drip_exhausts_total_deadline():
-    port, captured, worker = serve_proxy(
-        b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"
+def test_https_proxy_discovers_platform_system_proxy(monkeypatch):
+    port, captured, worker = serve_proxy()
+    for name in ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        "comfyui_progress_bridge.desktop.notifications.urllib.request.getproxies",
+        lambda: {"https": f"http://127.0.0.1:{port}"},
     )
+    monkeypatch.setattr(
+        "comfyui_progress_bridge.desktop.notifications.urllib.request.proxy_bypass",
+        lambda _host: False,
+    )
+
+    def resolver(host, _port, _timeout):
+        assert host == "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, port))]
+
+    transport = FixedOriginHttpsTransport(resolver=resolver, ssl_context=PlainTlsContext())
+    assert request(transport).status == 200
+    worker.join(1)
+    assert captured[0].startswith(b"CONNECT api.telegram.org:443 HTTP/1.1\r\n")
+
+
+def test_https_proxy_rejects_non_2xx_and_drip_exhausts_total_deadline():
+    port, captured, worker = serve_proxy(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
     transport, _ = proxy_transport(port)
     with pytest.raises(OSError, match="proxy tunnel"):
         request(transport)
@@ -235,7 +256,7 @@ def wx_settings(tmp_path, account):
 def test_weixin_real_account_id_with_at_sign_uses_safe_component(tmp_path):
     account = "bot.local-part@example.com"
     context = tmp_path / f"{account}.context-tokens.json"
-    context.write_text(json.dumps({"peer": "persisted"}))
+    _write_private_context(context, {"peer": "persisted"})
     settings = wx_settings(tmp_path, account)
     transport = type(
         "Transport",

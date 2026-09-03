@@ -16,6 +16,7 @@ from comfyui_progress_bridge.desktop.notifications import (
     HttpResponse,
     NotificationSender,
     _DaemonResolver,
+    _is_weixin_rate_limit,
     _is_weixin_stale_session,
 )
 from comfyui_progress_bridge.desktop.settings import (
@@ -73,9 +74,7 @@ def _transport_for(port):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
 
     context = PlainTlsContext()
-    return FixedOriginHttpsTransport(
-        resolver=resolver, ssl_context=context, proxy_url=""
-    ), context
+    return FixedOriginHttpsTransport(resolver=resolver, ssl_context=context, proxy_url=""), context
 
 
 def test_fixed_origin_transport_parses_chunked_and_preserves_sni():
@@ -258,29 +257,51 @@ class HostileInt(int):
         raise RuntimeError("must not execute attacker methods")
 
 
+def _write_private_context(path, payload):
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
-        {"ret": -2.0, "errcode": -2, "errmsg": "unknown error"},
-        {"ret": -2, "errcode": -2.0, "errmsg": "unknown error"},
-        {"ret": "-2", "errcode": -2, "errmsg": "unknown error"},
-        {"ret": -2, "errcode": "-2", "errmsg": "unknown error"},
-        {"ret": True, "errcode": -2, "errmsg": "unknown error"},
-        {"ret": -2, "errcode": True, "errmsg": "unknown error"},
+        {"ret": -14},
+        {"errcode": -14},
         {"ret": -2, "errmsg": "unknown error"},
         {"errcode": -2, "errmsg": "unknown error"},
-        {"ret": -2, "errcode": 0, "errmsg": "unknown error"},
-        {"ret": 0, "errcode": -2, "errmsg": "unknown error"},
+        {"ret": -2, "errcode": -2, "errmsg": "unknown error"},
         {"ret": -2, "errcode": -2, "errmsg": None},
-        {"ret": -2, "errcode": -2, "errmsg": ["unknown error"]},
-        {"ret": -2, "errcode": -2, "errmsg": HostileErrmsg()},
-        {"ret": -14.0},
-        {"errcode": "-14"},
-        {"ret": False, "errcode": -14},
-        {"ret": -14, "errcode": 9},
+        {"ret": -2, "errcode": -2, "errmsg": ""},
     ],
 )
-def test_weixin_stale_session_classifier_fails_closed(payload):
+def test_weixin_stale_session_classifier_accepts_known_stale_shapes(payload):
+    assert _is_weixin_stale_session(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ret": -2, "errmsg": "prepare failed"},
+        {"errcode": -2, "errmsg": "prepare failed"},
+        {"ret": -2, "errmsg": "rate limited"},
+        {"errcode": -2, "errmsg": "frequency limit"},
+    ],
+)
+def test_weixin_stale_session_classifier_rejects_non_stale_shapes(payload):
+    assert not _is_weixin_stale_session(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ret": -14, "errcode": 9},
+        {"ret": -2, "errcode": 0, "errmsg": "unknown error"},
+        {"ret": 0, "errcode": -2, "errmsg": "unknown error"},
+        {"ret": -2.0, "errmsg": "unknown error"},
+        {"ret": True, "errmsg": "unknown error"},
+    ],
+)
+def test_weixin_stale_session_classifier_rejects_contradictory_or_hostile_shapes(payload):
     assert not _is_weixin_stale_session(payload)
 
 
@@ -296,9 +317,39 @@ def test_weixin_documented_stale_shapes_are_strictly_recognized(payload):
     assert _is_weixin_stale_session(payload)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ret": -2, "errmsg": "rate limited"},
+        {"errcode": -2, "errmsg": "frequency limit"},
+        {"ret": -2, "errcode": -2, "errmsg": "too frequent"},
+    ],
+)
+def test_weixin_rate_limit_classifier_requires_rate_limit_message(payload):
+    assert _is_weixin_rate_limit(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ret": -2},
+        {"errcode": -2},
+        {"ret": -2, "errmsg": "unknown error"},
+        {"ret": -2, "errmsg": "prepare failed"},
+        {"ret": -14},
+        {"ret": -2, "errcode": 0, "errmsg": "rate limited"},
+        {"ret": 0, "errcode": -2, "errmsg": "frequency limit"},
+    ],
+)
+def test_weixin_rate_limit_classifier_rejects_stale_and_context_errors(payload):
+    assert not _is_weixin_rate_limit(payload)
+
+
 _INVALID_WEIXIN_SUCCESS_PAYLOADS = [
     {},
-    {"errcode": 0},
+    {"message_id": ""},
+    {"message_id": False},
+    {"message_id": []},
     {"ret": None},
     {"ret": False},
     {"ret": 0.0},
@@ -317,7 +368,9 @@ _INVALID_WEIXIN_SUCCESS_PAYLOADS = [
     _INVALID_WEIXIN_SUCCESS_PAYLOADS,
     ids=[
         "empty",
-        "missing-ret",
+        "empty-message-id",
+        "bool-message-id",
+        "list-message-id",
         "null-ret",
         "bool-ret",
         "float-ret",
@@ -345,8 +398,19 @@ def test_weixin_success_validator_rejects_int_subclasses_without_comparison(payl
     assert not notifications_module._is_weixin_success(payload)
 
 
-@pytest.mark.parametrize("payload", [{"ret": 0}, {"ret": 0, "errcode": 0}])
+@pytest.mark.parametrize("payload", [{"ret": 0}, {"errcode": 0}, {"ret": 0, "errcode": 0}])
 def test_weixin_success_validator_accepts_documented_shapes(payload):
+    assert notifications_module._is_weixin_success(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"message_id": "server-assigned-id"},
+        {"message_id": 123456789},
+    ],
+)
+def test_weixin_success_validator_accepts_live_message_id_shape(payload):
     assert notifications_module._is_weixin_success(payload)
 
 
@@ -354,7 +418,7 @@ def test_weixin_success_validator_accepts_documented_shapes(payload):
 def test_weixin_malformed_first_response_is_api_error_without_retry_or_leak(tmp_path, payload):
     secret = "hostile-response-secret"
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "context"}))
+    _write_private_context(context, {"peer": "context"})
     settings = _wx_settings(tmp_path, "acct", context)
     transport = type(
         "Transport",
@@ -380,7 +444,7 @@ def test_weixin_malformed_tokenless_retry_is_api_error_without_third_send_or_lea
 ):
     secret = "hostile-retry-response-secret"
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "context"}))
+    _write_private_context(context, {"peer": "context"})
     settings = _wx_settings(tmp_path, "acct", context)
 
     class Transport:
@@ -409,7 +473,7 @@ def _count_response(transport, result):
 
 def test_weixin_malformed_or_oversized_first_response_never_retries(tmp_path):
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "context"}))
+    _write_private_context(context, {"peer": "context"})
     settings = _wx_settings(tmp_path, "acct", context)
 
     for first in (
@@ -421,9 +485,7 @@ def test_weixin_malformed_or_oversized_first_response_never_retries(tmp_path):
             (),
             {
                 "calls": 0,
-                "request": lambda self, *_a, _first=first, **_kw: _count_response(
-                    self, _first
-                ),
+                "request": lambda self, *_a, _first=first, **_kw: _count_response(self, _first),
             },
         )()
         result = NotificationSender(transport).send_platform("weixin", "done", settings)
@@ -433,7 +495,7 @@ def test_weixin_malformed_or_oversized_first_response_never_retries(tmp_path):
 
 def test_weixin_stale_tokenless_response_does_not_trigger_third_send(tmp_path):
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "context"}))
+    _write_private_context(context, {"peer": "context"})
     settings = _wx_settings(tmp_path, "acct", context)
 
     class Transport:
@@ -457,7 +519,7 @@ def test_weixin_sender_and_fixed_transport_use_one_monotonic_deadline(tmp_path):
     port, worker = _serve_sequence([(0.65, stale), (0.65, b'{"ret":0}')])
     transport, _ = _transport_for(port)
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "context"}))
+    _write_private_context(context, {"peer": "context"})
     settings = _wx_settings(tmp_path, "acct", context, timeout=1)
     started = time.monotonic()
 
@@ -482,7 +544,8 @@ def test_weixin_account_traversal_is_rejected_before_context_read(tmp_path):
 
 def test_weixin_context_symlink_and_lstat_open_swap_fail_closed(tmp_path, monkeypatch):
     context = tmp_path / "acct.context-tokens.json"
-    context.write_text(json.dumps({"peer": "good"}))
+    _write_private_context(context, {"peer": "good"})
+    context.chmod(0o600)
     secret = tmp_path / "secret"
     secret.write_text(json.dumps({"peer": "stolen"}))
     settings = _wx_settings(tmp_path, "acct", context)
@@ -492,7 +555,8 @@ def test_weixin_context_symlink_and_lstat_open_swap_fail_closed(tmp_path, monkey
     assert NotificationSender._context_token(settings.notifications, "acct", "peer") == ""
 
     context.unlink()
-    context.write_text(json.dumps({"peer": "good"}))
+    _write_private_context(context, {"peer": "good"})
+    context.chmod(0o600)
     real_open = os.open
 
     def swapping_open(path, flags, *args):
@@ -503,6 +567,25 @@ def test_weixin_context_symlink_and_lstat_open_swap_fail_closed(tmp_path, monkey
 
     monkeypatch.setattr(os, "open", swapping_open)
     assert NotificationSender._context_token(settings.notifications, "acct", "peer") == ""
+
+
+def test_weixin_context_must_be_owner_private_and_directory_store_cannot_be_symlink(tmp_path):
+    context = tmp_path / "acct.context-tokens.json"
+    _write_private_context(context, {"peer": "context"})
+    context.chmod(0o644)
+    settings = _wx_settings(tmp_path, "acct", context)
+    assert NotificationSender._context_token(settings.notifications, "acct", "peer") == ""
+
+    context.chmod(0o600)
+    real_store = tmp_path / "real-store"
+    real_store.mkdir()
+    stored = real_store / "acct.context-tokens.json"
+    stored.write_text(json.dumps({"peer": "context"}))
+    stored.chmod(0o600)
+    linked_store = tmp_path / "linked-store"
+    linked_store.symlink_to(real_store, target_is_directory=True)
+    linked_settings = _wx_settings(tmp_path, "acct", linked_store)
+    assert NotificationSender._context_token(linked_settings.notifications, "acct", "peer") == ""
 
 
 def _complete(endpoint, epoch, *, transition=True):

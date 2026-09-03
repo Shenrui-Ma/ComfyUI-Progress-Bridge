@@ -12,6 +12,7 @@ import time
 import uuid
 import warnings
 from collections.abc import Callable, Mapping
+from functools import wraps
 from typing import Any, TypeGuard
 
 SUPPORTED_EVENTS = frozenset(
@@ -194,9 +195,10 @@ def install_bridge(
     sequence = 0
     send_lock = threading.Lock()
 
-    def send_sync_with_bridge(self, event, data, sid=None):
+    @wraps(current)
+    def send_sync_with_bridge(self, event, data, sid=None, *args, **kwargs):
         nonlocal sequence
-        result = current(self, event, data, sid)
+        result = current(self, event, data, sid, *args, **kwargs)
         try:
             if event in SUPPORTED_EVENTS:
                 with send_lock:
