@@ -19,7 +19,7 @@
 <br clear="right">
 
 <p align="center">
-  <img src="docs/images/comfyui-progress-dock.png" width="640" alt="ComfyUI Progress Bridge 桌面悬浮窗，展示队列、活动节点和采样进度">
+  <img src="docs/images/comfyui-progress-dock.png" width="560" alt="ComfyUI Progress Bridge 桌面悬浮窗，展示队列、活动节点和采样进度">
 </p>
 <p align="center"><sub>原生多端点桌面悬浮窗，实时展示队列、节点与采样进度。</sub></p>
 

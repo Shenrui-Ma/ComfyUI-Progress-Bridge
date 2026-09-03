@@ -20,7 +20,7 @@ workflow JSON, queue controls, prompts, models, or generated media.
 <br clear="right">
 
 <p align="center">
-  <img src="docs/images/comfyui-progress-dock.png" width="640" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
+  <img src="docs/images/comfyui-progress-dock.png" width="560" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
 </p>
 <p align="center"><sub>Native multi-endpoint desktop dock with live queue, node, and sampler progress.</sub></p>
 
