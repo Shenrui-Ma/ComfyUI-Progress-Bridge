@@ -1,2 +1,3 @@
 include docs/backend-notifications.md
 include docs/images/*.png
+include README.zh-CN.md

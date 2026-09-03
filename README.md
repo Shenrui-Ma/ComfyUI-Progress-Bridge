@@ -1,5 +1,7 @@
 # ComfyUI Progress Bridge
 
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
+
 <img align="right" src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
 
 [![CI](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml)
