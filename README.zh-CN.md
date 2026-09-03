@@ -20,12 +20,9 @@
 
 ## 演示视频
 
-<p align="center">
-  <a href="docs/videos/comfyui-progress-bridge-demo-zh-CN.mp4">
-    <img src="docs/images/demo-zh-CN-poster.jpg" width="300" alt="观看 37 秒 ComfyUI Progress Bridge 中文演示">
-  </a>
-</p>
-<p align="center"><strong><a href="docs/videos/comfyui-progress-bridge-demo-zh-CN.mp4">▶ 观看 37 秒中文演示</a></strong></p>
+https://github.com/user-attachments/assets/2162ce3f-f9c2-4dfa-8ec7-2e9775b76271
+
+_37 秒中文功能演示。_
 
 <p align="center">
   <img src="docs/images/comfyui-progress-dock.png" width="400" alt="ComfyUI Progress Bridge 桌面悬浮窗，展示队列、活动节点和采样进度">
