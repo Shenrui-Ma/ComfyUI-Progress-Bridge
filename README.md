@@ -19,6 +19,15 @@ workflow JSON, queue controls, prompts, models, or generated media.
 
 <br clear="right">
 
+## Demo video
+
+<p align="center">
+  <a href="docs/videos/comfyui-progress-bridge-demo-en.mp4">
+    <img src="docs/images/demo-en-poster.jpg" width="300" alt="Watch the 37-second English ComfyUI Progress Bridge demo">
+  </a>
+</p>
+<p align="center"><strong><a href="docs/videos/comfyui-progress-bridge-demo-en.mp4">▶ Watch the 37-second English demo</a></strong></p>
+
 <p align="center">
   <img src="docs/images/comfyui-progress-dock.png" width="400" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
 </p>
