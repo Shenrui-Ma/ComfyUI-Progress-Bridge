@@ -30,6 +30,7 @@ ComfyUI PromptServer.send_sync
 - Works through an ordinary SSH port forward or WebSocket-capable reverse proxy
 - Uses loopback by default; no network service is exposed
 - Automatically starts one native PyQt6 desktop progress dock when ComfyUI imports the extension
+- Optionally sends queue-drained Telegram/Weixin notifications directly from the ComfyUI backend
 - Is idempotent and fail-open: monitoring or desktop-launch errors never stop ComfyUI execution
 - Provides a server extension only; it intentionally adds no workflow node
 
@@ -114,6 +115,23 @@ Python environment, PyQt6 process, SSH probe, or UDP port is needed on the local
 
 For a reverse proxy instead of SSH, proxy both HTTP and WebSocket upgrades for the ComfyUI origin.
 
+## Backend queue-complete notifications
+
+Telegram and Weixin can notify directly from the ComfyUI Python process when the whole queue changes
+from busy to empty. This path does not require the desktop window to remain visible, Hermes or another
+gateway to be running, an LLM call, a browser, or a workflow node.
+
+For a local desktop installation, open the progress dock settings and use the separate **Backend
+queue-complete notifications** section. Telegram and Weixin have independent enable switches,
+targets, and test buttons. Select an owner-private credential env file containing only the required
+token keys, save, and restart ComfyUI. Backend mode is disabled by default and QQ is intentionally
+not available there.
+
+For a headless or remote ComfyUI host, provision an owner-private backend JSON and credential file
+on that host and select it with `COMFY_PROGRESS_BRIDGE_BACKEND_CONFIG` before launch. See
+[Backend notification setup](docs/backend-notifications.md) for local and remote examples, file
+permissions, Weixin context-token requirements, and queue semantics.
+
 ## Receive events
 
 Run the included receiver:
@@ -149,6 +167,10 @@ Example:
 ```bash
 COMFY_PROGRESS_BRIDGE_PORT=41000 python main.py --port 8189
 ```
+
+Notification HTTPS requests honor validated `HTTPS_PROXY`/`NO_PROXY` settings and the native macOS
+system HTTPS proxy. Redirects remain disabled and API origins are fixed to the supported official
+hosts.
 
 ## Event contract
 
