@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .backend_notifications import (
+    install_backend_notifications,
+    load_backend_notification_config,
+)
 from .bridge import install_bridge, resolve_target
 from .desktop_launcher import launch_desktop
 
@@ -36,6 +40,15 @@ def install_comfyui_bridge(
             except Exception as exc:
                 status = f"unavailable: {exc}"
             print(f"[ComfyUI Progress Bridge] desktop launch {status}")
+        try:
+            backend_config = load_backend_notification_config()
+            if backend_config is not None:
+                backend_installed = install_backend_notifications(PromptServer, backend_config)
+                if backend_installed:
+                    print("[ComfyUI Progress Bridge] backend notifications enabled")
+        except Exception:
+            # Never expose malformed local config contents, which could include credentials.
+            print("[ComfyUI Progress Bridge] backend notifications disabled")
         return installed
     except Exception as exc:
         # A monitoring extension must not prevent ComfyUI from starting.

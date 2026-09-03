@@ -7,6 +7,7 @@ import pytest
 from comfyui_progress_bridge.desktop.settings import (
     AppSettings,
     AudioConfig,
+    BackendNotificationSettings,
     EndpointConfig,
     NotificationConfig,
     QQNotificationConfig,
@@ -50,6 +51,16 @@ def test_secure_atomic_round_trip_and_unique_endpoints(tmp_path):
             qq=QQNotificationConfig(True, "channel", "channel-id"),
         ),
         audio=AudioConfig(True, "custom", "/private/done.wav"),
+        backend_notifications=BackendNotificationSettings(
+            enabled=True,
+            name="Render host",
+            credentials_file="/private/backend-credentials.env",
+            timeout=5,
+            telegram=TelegramNotificationConfig(True, "backend-chat", 9),
+            weixin=WeixinNotificationConfig(
+                True, "backend-account", "backend-peer", "/private/backend-context"
+            ),
+        ),
     )
     SettingsStore(path).save(completion_settings)
     assert SettingsStore(path).load() == completion_settings
@@ -72,6 +83,19 @@ def test_secure_atomic_round_trip_and_unique_endpoints(tmp_path):
         )
 
 
+def test_default_notification_paths_are_project_owned_not_gateway_owned(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMFYUI_PROGRESS_CONFIG_DIR", str(tmp_path))
+
+    settings = AppSettings()
+
+    assert settings.notifications.env_file == str(tmp_path / "notification-credentials.env")
+    assert settings.backend_notifications.credentials_file == str(
+        tmp_path / "backend-notification-credentials.env"
+    )
+    assert settings.backend_notifications.weixin.context_store == str(tmp_path / "weixin")
+    assert ".hermes" not in repr(settings)
+
+
 def test_custom_settings_path_preserves_existing_parent_permissions(tmp_path):
     parent = tmp_path / "shared"
     parent.mkdir(mode=0o755)
@@ -90,7 +114,7 @@ def test_invalid_config_recovers_defaults_and_quarantines_file(tmp_path):
     loaded = SettingsStore(path).load()
     assert loaded == AppSettings()
     assert list(tmp_path.glob("settings.json.invalid-*"))
-    assert json.loads(path.read_text())["schema_version"] == 3
+    assert json.loads(path.read_text())["schema_version"] == 4
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -129,7 +153,17 @@ def test_schema_one_migration_and_override_directory(tmp_path, monkeypatch):
     assert loaded.mode == "simple"
     assert loaded.endpoints[0].name == "Local"
     assert loaded.endpoints[0].host == "127.0.0.1"
-    assert json.loads(path.read_text())["schema_version"] == 3
+    assert json.loads(path.read_text())["schema_version"] == 4
+
+
+def test_schema_three_migration_adds_disabled_backend_notifications(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 3}), encoding="utf-8")
+
+    loaded = SettingsStore(path).load()
+
+    assert loaded.backend_notifications == BackendNotificationSettings()
+    assert json.loads(path.read_text())["schema_version"] == 4
 
 
 @pytest.mark.parametrize(

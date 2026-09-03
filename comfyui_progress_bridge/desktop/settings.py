@@ -15,7 +15,7 @@ from typing import Any
 
 from comfyui_progress_bridge.monitor.source import build_ssh_argv
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_SETTINGS_BYTES = 1_048_576
 LANGUAGES = frozenset({"zh-CN", "ja-JP", "en-US", "ko-KR"})
 THEMES = frozenset({"dark", "light", "system"})
@@ -206,7 +206,9 @@ class QQNotificationConfig:
 @dataclass(frozen=True)
 class NotificationConfig:
     enabled: bool = False
-    env_file: str = "~/.hermes/.env"
+    env_file: str = field(
+        default_factory=lambda: str(config_directory() / "notification-credentials.env")
+    )
     timeout: float = 10.0
     telegram: TelegramNotificationConfig = field(default_factory=TelegramNotificationConfig)
     weixin: WeixinNotificationConfig = field(default_factory=WeixinNotificationConfig)
@@ -226,6 +228,43 @@ class NotificationConfig:
             raise ValueError("weixin must be WeixinNotificationConfig")
         if not isinstance(self.qq, QQNotificationConfig):
             raise ValueError("qq must be QQNotificationConfig")
+
+
+@dataclass(frozen=True)
+class BackendNotificationSettings:
+    """Independent opt-in settings consumed by the ComfyUI backend process."""
+
+    enabled: bool = False
+    name: str = "ComfyUI"
+    credentials_file: str = field(
+        default_factory=lambda: str(config_directory() / "backend-notification-credentials.env")
+    )
+    timeout: float = 10.0
+    telegram: TelegramNotificationConfig = field(default_factory=TelegramNotificationConfig)
+    weixin: WeixinNotificationConfig = field(
+        default_factory=lambda: WeixinNotificationConfig(
+            context_store=str(config_directory() / "weixin")
+        )
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("backend notifications enabled must be a bool")
+        _text(self.name, "backend name")
+        _text(self.credentials_file, "backend credential file", required=False)
+        if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)):
+            raise ValueError("backend notification timeout must be a number")
+        if not 1 <= self.timeout <= 30:
+            raise ValueError("backend notification timeout must be between 1 and 30 seconds")
+        if not isinstance(self.telegram, TelegramNotificationConfig):
+            raise ValueError("backend telegram must be TelegramNotificationConfig")
+        if not isinstance(self.weixin, WeixinNotificationConfig):
+            raise ValueError("backend weixin must be WeixinNotificationConfig")
+        if self.enabled:
+            if not self.credentials_file.strip():
+                raise ValueError("backend credential file is required when enabled")
+            if not self.telegram.enabled and not self.weixin.enabled:
+                raise ValueError("enable Telegram or Weixin for backend notifications")
 
 
 @dataclass(frozen=True)
@@ -257,6 +296,9 @@ class AppSettings:
     avatar_paths: tuple[str, ...] = ()
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
+    backend_notifications: BackendNotificationSettings = field(
+        default_factory=BackendNotificationSettings
+    )
 
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
@@ -299,6 +341,8 @@ class AppSettings:
             raise ValueError("notifications must be NotificationConfig")
         if not isinstance(self.audio, AudioConfig):
             raise ValueError("audio must be AudioConfig")
+        if not isinstance(self.backend_notifications, BackendNotificationSettings):
+            raise ValueError("backend_notifications must be BackendNotificationSettings")
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> AppSettings:
@@ -348,6 +392,21 @@ class AppSettings:
             if not isinstance(audio, dict):
                 raise ValueError("audio must be an object")
             data["audio"] = AudioConfig(**audio)
+        backend = data.get("backend_notifications")
+        if backend is not None:
+            if not isinstance(backend, dict):
+                raise ValueError("backend_notifications must be an object")
+            backend_data = dict(backend)
+            for key, config_type in (
+                ("telegram", TelegramNotificationConfig),
+                ("weixin", WeixinNotificationConfig),
+            ):
+                value = backend_data.get(key)
+                if value is not None:
+                    if not isinstance(value, dict):
+                        raise ValueError(f"backend_notifications.{key} must be an object")
+                    backend_data[key] = config_type(**value)
+            data["backend_notifications"] = BackendNotificationSettings(**backend_data)
         return cls(**data)
 
 
@@ -408,11 +467,12 @@ class SettingsStore:
         version = raw.get("schema_version")
         if version == SCHEMA_VERSION:
             return raw, False
-        if version == 2:
+        if version in {2, 3}:
             migrated = dict(raw)
             migrated["schema_version"] = SCHEMA_VERSION
             migrated.setdefault("notifications", asdict(NotificationConfig()))
             migrated.setdefault("audio", asdict(AudioConfig()))
+            migrated.setdefault("backend_notifications", asdict(BackendNotificationSettings()))
             return migrated, True
         if version != 1:
             raise ValueError("unsupported settings schema")
@@ -445,6 +505,7 @@ class SettingsStore:
             "endpoints": endpoints or [asdict(EndpointConfig())],
             "notifications": asdict(NotificationConfig()),
             "audio": asdict(AudioConfig()),
+            "backend_notifications": asdict(BackendNotificationSettings()),
         }
         return migrated, True
 

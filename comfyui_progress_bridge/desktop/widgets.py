@@ -56,6 +56,7 @@ from .i18n import LANGUAGES, Translator, localized_result
 from .settings import (
     AppSettings,
     AudioConfig,
+    BackendNotificationSettings,
     EndpointConfig,
     NotificationConfig,
     QQNotificationConfig,
@@ -564,6 +565,53 @@ class SettingsDialog(QDialog):
         completion_form.addRow(self.t("wav_file"), self.audio_path)
         completion_form.addRow("", self.audio_test_button)
         content.addLayout(completion_form)
+
+        backend = settings.backend_notifications
+        backend_form = QFormLayout()
+        self.backend_enabled = QCheckBox()
+        self.backend_enabled.setChecked(backend.enabled)
+        self.backend_name = QLineEdit(backend.name)
+        self.backend_env_file = QLineEdit(backend.credentials_file)
+        self.backend_env_file.setEchoMode(QLineEdit.EchoMode.Password)
+        self.backend_timeout = QLineEdit(str(backend.timeout))
+        self.backend_telegram_enabled = QCheckBox("Telegram")
+        self.backend_telegram_enabled.setChecked(backend.telegram.enabled)
+        self.backend_telegram_target = QLineEdit(backend.telegram.chat_id)
+        self.backend_telegram_thread = QLineEdit(
+            "" if backend.telegram.thread_id is None else str(backend.telegram.thread_id)
+        )
+        self.backend_weixin_enabled = QCheckBox("Weixin")
+        self.backend_weixin_enabled.setChecked(backend.weixin.enabled)
+        self.backend_weixin_account = QLineEdit(backend.weixin.account_id)
+        self.backend_weixin_target = QLineEdit(backend.weixin.target)
+        self.backend_weixin_context_store = QLineEdit(backend.weixin.context_store)
+        backend_form.addRow(self.t("backend_notifications"), self.backend_enabled)
+        backend_form.addRow(self.t("backend_name"), self.backend_name)
+        backend_form.addRow(self.t("credential_file"), self.backend_env_file)
+        backend_form.addRow(self.t("timeout"), self.backend_timeout)
+        backend_form.addRow("Telegram", self.backend_telegram_enabled)
+        backend_form.addRow(self.t("telegram_target"), self.backend_telegram_target)
+        backend_form.addRow(self.t("telegram_thread"), self.backend_telegram_thread)
+        backend_form.addRow("Weixin", self.backend_weixin_enabled)
+        backend_form.addRow(self.t("weixin_target"), self.backend_weixin_target)
+        backend_form.addRow(self.t("weixin_account"), self.backend_weixin_account)
+        backend_form.addRow(self.t("context_store"), self.backend_weixin_context_store)
+        backend_test_row = QHBoxLayout()
+        self.backend_notification_test_buttons = {}
+        for platform in ("telegram", "weixin"):
+            button = QPushButton(f"{self.t('test_notification')} · backend {platform}")
+            button.clicked.connect(
+                lambda _checked=False, selected=platform: self._test_notification(
+                    selected, backend=True
+                )
+            )
+            backend_test_row.addWidget(button)
+            self.backend_notification_test_buttons[platform] = button
+        backend_form.addRow(self.t("credential_state"), backend_test_row)
+        restart_note = QLabel(self.t("backend_restart_required"))
+        restart_note.setWordWrap(True)
+        backend_form.addRow("", restart_note)
+        content.addLayout(backend_form)
         content.addStretch(1)
 
         self.validation_label = QLabel("")
@@ -597,6 +645,8 @@ class SettingsDialog(QDialog):
     def _set_test_controls_enabled(self, enabled: bool) -> None:
         for button in self.notification_test_buttons.values():
             button.setEnabled(enabled)
+        for button in self.backend_notification_test_buttons.values():
+            button.setEnabled(enabled)
         self.audio_test_button.setEnabled(enabled)
 
     def _show_test_result(self, result) -> None:
@@ -616,7 +666,7 @@ class SettingsDialog(QDialog):
 
         self._show_test_result(SafeResult(False, "busy", "Test action is busy"))
 
-    def _test_notification(self, platform: str) -> None:
+    def _test_notification(self, platform: str, *, backend: bool = False) -> None:
         """Submit an explicit send to the dialog's sole bounded worker."""
         if self._test_worker.active:
             self._busy_result()
@@ -628,6 +678,20 @@ class SettingsDialog(QDialog):
 
             self._show_test_result(SafeResult(False, "invalid_settings", "Invalid settings"))
             return
+
+        if backend:
+            backend_config = candidate.backend_notifications
+            candidate = replace(
+                candidate,
+                notifications=NotificationConfig(
+                    enabled=backend_config.enabled,
+                    env_file=backend_config.credentials_file,
+                    timeout=backend_config.timeout,
+                    telegram=backend_config.telegram,
+                    weixin=backend_config.weixin,
+                    qq=QQNotificationConfig(),
+                ),
+            )
 
         def run():
             sender = self.notification_sender
@@ -722,6 +786,7 @@ class SettingsDialog(QDialog):
             )
         paths = tuple(edit.text().strip() for edit in self.avatar_edits if edit.text().strip())
         thread_text = self.telegram_thread.text().strip()
+        backend_thread_text = self.backend_telegram_thread.text().strip()
         notification = NotificationConfig(
             enabled=self.notifications_enabled.isChecked(),
             env_file=self.env_file.text().strip(),
@@ -748,6 +813,23 @@ class SettingsDialog(QDialog):
             mode=self.audio_mode.currentData(),
             wav_path=self.audio_path.text().strip(),
         )
+        backend_notifications = BackendNotificationSettings(
+            enabled=self.backend_enabled.isChecked(),
+            name=self.backend_name.text().strip(),
+            credentials_file=self.backend_env_file.text().strip(),
+            timeout=float(self.backend_timeout.text().strip()),
+            telegram=TelegramNotificationConfig(
+                enabled=self.backend_telegram_enabled.isChecked(),
+                chat_id=self.backend_telegram_target.text().strip(),
+                thread_id=int(backend_thread_text) if backend_thread_text else None,
+            ),
+            weixin=WeixinNotificationConfig(
+                enabled=self.backend_weixin_enabled.isChecked(),
+                account_id=self.backend_weixin_account.text().strip(),
+                target=self.backend_weixin_target.text().strip(),
+                context_store=self.backend_weixin_context_store.text().strip(),
+            ),
+        )
         return replace(
             self.original,
             language=self.language.currentData(),
@@ -760,6 +842,7 @@ class SettingsDialog(QDialog):
             avatar_paths=paths,
             notifications=notification,
             audio=audio,
+            backend_notifications=backend_notifications,
         )
 
 

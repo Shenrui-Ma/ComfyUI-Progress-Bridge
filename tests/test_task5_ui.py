@@ -14,6 +14,7 @@ from comfyui_progress_bridge.desktop.notifications import RESULT_CODES, SafeResu
 from comfyui_progress_bridge.desktop.settings import (
     AppSettings,
     AudioConfig,
+    BackendNotificationSettings,
     NotificationConfig,
     QQNotificationConfig,
     SettingsStore,
@@ -60,6 +61,16 @@ def configured_settings(language="en-US"):
             qq=QQNotificationConfig(True, "group", "group-id"),
         ),
         audio=AudioConfig(True, "custom", "/private/done.wav"),
+        backend_notifications=BackendNotificationSettings(
+            enabled=True,
+            name="Render host",
+            credentials_file="/private/backend.env",
+            timeout=6,
+            telegram=TelegramNotificationConfig(True, "backend-chat", 23),
+            weixin=WeixinNotificationConfig(
+                True, "backend-account", "backend-peer", "/private/backend-context.json"
+            ),
+        ),
     )
 
 
@@ -81,9 +92,13 @@ def test_task5_dialog_has_localized_targets_switches_and_test_controls(app, lang
         "audio_enabled",
         "audio",
         "wav_file",
+        "backend_notifications",
+        "backend_name",
+        "backend_restart_required",
     ):
         assert translator(key) in labels
     assert set(dialog.notification_test_buttons) == {"telegram", "weixin", "qq"}
+    assert set(dialog.backend_notification_test_buttons) == {"telegram", "weixin"}
     assert all(
         translator("test_notification") in button.text()
         for button in dialog.notification_test_buttons.values()
@@ -99,6 +114,7 @@ def test_task5_dialog_round_trips_targets_and_audio(app):
     result = dialog.result_settings()
     assert result.notifications == settings.notifications
     assert result.audio == settings.audio
+    assert result.backend_notifications == settings.backend_notifications
     dialog.close()
 
 
@@ -117,6 +133,24 @@ def test_notification_tests_only_send_after_explicit_button_click_and_run_off_ui
     assert sender.calls[0][0] == "telegram"
     assert sender.calls[0][2].notifications.telegram.chat_id == "chat"
     assert localized_result("en-US", "sent") in dialog.validation_label.text()
+    dialog.close()
+
+
+def test_backend_notification_test_uses_independent_backend_settings(app):
+    sender = FakeNotificationSender()
+    dialog = SettingsDialog(configured_settings(), notification_sender=sender)
+
+    dialog.backend_notification_test_buttons["telegram"].click()
+    assert sender.called.wait(1)
+
+    assert len(sender.calls) == 1
+    platform, _text, candidate = sender.calls[0]
+    assert platform == "telegram"
+    assert candidate.notifications.enabled is True
+    assert candidate.notifications.env_file == "/private/backend.env"
+    assert candidate.notifications.telegram.chat_id == "backend-chat"
+    assert candidate.notifications.weixin.target == "backend-peer"
+    assert candidate.notifications.qq.enabled is False
     dialog.close()
 
 
