@@ -1,40 +1,133 @@
 # ComfyUI Progress Bridge
 
-A lightweight [ComfyUI](https://github.com/comfyanonymous/ComfyUI) extension that shows live execution progress directly in the ComfyUI browser page and mirrors the same compact events to an optional native desktop monitor over UDP.
+<img align="right" src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
 
-It is designed for desktop companions, status docks, dashboards, and other observers that need the real active node and sampler progress without hijacking the WebSocket used by the client that submitted the prompt.
+[![CI](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.10–3.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom%20Node-111111)](https://github.com/comfyanonymous/ComfyUI)
+[![License](https://img.shields.io/badge/License-MIT-6C8EFF)](LICENSE)
+
+A lightweight, privacy-first ComfyUI server extension with three complementary progress surfaces:
+a zero-configuration browser panel, an optional native desktop dock, and a bounded UDP event bridge.
+It can also send Telegram and Weixin notifications directly from the ComfyUI backend when the real
+execution queue finishes.
+
+The extension intentionally adds **no visible workflow nodes**. It monitors ComfyUI without changing
+workflow JSON, queue controls, prompts, models, or generated media.
+
+<br clear="right">
 
 <p align="center">
-  <img src="docs/images/comfyui-progress-dock.png" width="528" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
+  <img src="docs/images/comfyui-progress-dock.png" width="640" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
 </p>
-<p align="center"><sub>Transparent desktop dock with live queue, node, and sampler progress.</sub></p>
+<p align="center"><sub>Native multi-endpoint desktop dock with live queue, node, and sampler progress.</sub></p>
 
-## Why this exists
+## Highlights
 
-ComfyUI normally sends `executing` and `progress` WebSocket events to the submitting client's `client_id`. A second WebSocket opened by an external monitor therefore may see the queue but miss node-level events.
+| Area | Included functionality |
+| --- | --- |
+| ComfyUI integration | Import-time server extension, no graph nodes, no workflow mutation, idempotent `PromptServer.send_sync` wrapping |
+| Browser panel | Automatically served with ComfyUI, zero configuration, queue count, active node, sampler percentage, terminal state, persistent collapse state |
+| Desktop monitor | Frameless PyQt6 dock, multi-endpoint cards, local and SSH sources, simple/professional modes, themes, opacity, drag/restore, collapse, avatars |
+| Progress model | Running and pending prompts, friendly node/stage resolution, authoritative queue snapshots, client-routed execution events |
+| Languages | Simplified Chinese, English, Japanese, and Korean |
+| Desktop alerts | Telegram, Weixin, QQ, completion audio, platform-specific test actions |
+| Backend alerts | Telegram and Weixin, independently enabled and tested, triggered inside the ComfyUI process when a busy queue becomes empty |
+| Audio | Disabled, built-in ding, or validated custom WAV |
+| Remote monitoring | SSH probe with bounded reconnect/shutdown behavior; no remote agent service required |
+| Packaging | Standard ComfyUI custom-node layout, PEP 621 wheel/sdist, browser assets, CLI entry point, GitHub Actions matrix |
 
-This extension preserves ComfyUI's original delivery and emits a second, best-effort UDP copy on loopback:
+## Backend queue-complete notifications
+
+Backend notifications are part of this plugin. They do not require an agent framework, LLM,
+desktop window, browser tab, or notification workflow node.
+
+The trigger is mechanical:
 
 ```text
-ComfyUI PromptServer.send_sync
-        ├── original WebSocket delivery (unchanged)
-        └── compact UDP event → external visual monitor
+ComfyUI starts
+    └── plugin installs a PromptServer.send_sync observer
+            └── status.exec_info.queue_remaining > 0  → arm busy epoch
+                    └── first subsequent queue_remaining == 0
+                            └── enqueue exactly one completion notification
+                                    └── daemon worker sends Telegram / Weixin
 ```
 
-## Features
+Important semantics:
 
-- Mirrors `executing`, `progress`, `execution_error`, `execution_interrupted`, and `execution_success`
-- Preserves the original `PromptServer.send_sync` return value and client routing
-- Sends only a compact allowlist of useful fields
-- Adds a zero-configuration floating progress panel to the ComfyUI browser page
-- Works through an ordinary SSH port forward or WebSocket-capable reverse proxy
-- Uses loopback by default; no network service is exposed
-- Automatically starts one native PyQt6 desktop progress dock when ComfyUI imports the extension
-- Optionally sends queue-drained Telegram/Weixin notifications directly from the ComfyUI backend
-- Is idempotent and fail-open: monitoring or desktop-launch errors never stop ComfyUI execution
-- Provides a server extension only; it intentionally adds no workflow node
+- Initial zero does not notify.
+- Positive-to-positive changes remain inside the same busy epoch.
+- The first zero after a positive value notifies once and disarms the epoch.
+- Repeated zero, malformed data, booleans, negative counts, and unrelated events are ignored.
+- A later positive value starts a new epoch.
+- Multiple short epochs are counted even while the notification worker is busy.
+- Network work never runs in the `send_sync` callback.
+- Notification failures never change the original return value or stop ComfyUI execution.
+
+Telegram and Weixin have independent backend switches, targets, credentials, and test actions.
+QQ remains desktop-only.
+
+See [Backend notification setup](docs/backend-notifications.md) for local UI binding, headless server
+configuration, credential permissions, and remote-host examples.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Q[ComfyUI execution queue] --> PS[PromptServer.send_sync]
+    PS --> WS[Original client WebSocket]
+    PS --> UDP[Bounded UDP schema v2 mirror]
+    PS --> BN[Busy-to-empty backend observer]
+    WS --> BP[Browser progress panel]
+    UDP --> DM[Desktop monitor / SSH probe]
+    BN --> W[Single daemon notification worker]
+    W --> TG[Telegram Bot API]
+    W --> WX[Weixin iLink sendmessage]
+```
+
+The original WebSocket call always runs first. The UDP mirror and notification observer are
+best-effort side effects that fail open.
+
+## Robustness by the numbers
+
+The following limits are enforced by code and regression tests rather than being deployment advice.
+
+| Metric | Enforced value / behavior |
+| --- | --- |
+| Automated regression suite | **428 tests** in the current release line |
+| CI runtime matrix | Python **3.10, 3.11, 3.12, and 3.13** |
+| UDP datagram ceiling | **8192 bytes** |
+| Prompt ID bound | **256 characters** |
+| Ordinary mirrored string bound | **1024 characters** |
+| Mirrored error-text bound | **4096 characters** |
+| Notification request/config/env ceiling | **1 MiB** |
+| Notification response ceiling | **256 KiB** |
+| HTTP response-header ceiling | **64 KiB** |
+| Notification total timeout | Configurable **1–30 seconds**, enforced as one monotonic deadline |
+| Weixin stale-context retry | At most **one** retry without the stale context token |
+| Weixin rate-limit backoff | Bounded **1 s, 2 s, 4 s** schedule within the same total deadline |
+| DNS behavior | One bounded daemon resolver with a single pending request slot |
+| Queue completion deduplication | Exactly once per observed busy epoch |
+| Worker blocking behavior | Completed epochs accumulate; they are not silently dropped |
+| Backend installation | Idempotent under serial and concurrent installation attempts |
+| Credential/config permissions | Owner-only **0600** files; app-created config directories use **0700** |
+| Symlink/TOCTOU protection | `lstat` + `O_NOFOLLOW` + `fstat` device/inode verification |
+| HTTP origin policy | HTTPS only, fixed official API hosts, redirects forbidden |
+| Failure policy | Monitoring and notification errors are isolated from inference and WebSocket delivery |
+
+Repository verification commands:
+
+```bash
+uv lock --check
+uv run pytest -q
+uv run ruff check .
+uv run python -m compileall -q comfyui_progress_bridge tests
+uv build
+```
 
 ## Installation
+
+### ComfyUI custom-node installation
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
@@ -43,138 +136,125 @@ cd ComfyUI-Progress-Bridge
 python -m pip install -r requirements.txt
 ```
 
-ComfyUI Manager installs `requirements.txt` automatically; the final command is only needed for a
-manual clone and must use the same Python environment that runs ComfyUI.
+Use the Python environment that launches ComfyUI. Restart the instance after installation.
 
-Restart that ComfyUI instance. The browser panel is loaded with the ComfyUI page—no workflow node,
-separate local program, UDP forwarding, or first inference is required. On a desktop system,
-importing the custom node also starts the optional native progress dock automatically. Its startup
-log should include, for example:
+Expected startup messages include:
 
 ```text
 [ComfyUI Progress Bridge] schema 2 UDP 127.0.0.1:30999
 [ComfyUI Progress Bridge] desktop launch requested
 ```
 
-The importing ComfyUI HTTP port is passed to the dock automatically, including custom ports such
-as `8189`; this launch-time endpoint does not overwrite saved desktop settings. A secure per-endpoint
-lock prevents repeated imports from opening duplicate dock windows while allowing different local
-ComfyUI ports to have their own monitors.
+If backend notifications are configured:
 
-For a headless server, or when a separately managed monitor is preferred, disable automatic UI
-startup before launching ComfyUI:
-
-```bash
-COMFY_PROGRESS_BRIDGE_AUTOSTART=0 python main.py --port 8188
+```text
+[ComfyUI Progress Bridge] backend notifications enabled
 ```
 
-Every ComfyUI process sends to the shared loopback listener on UDP port `30999`.
-The schema-v2 envelope carries the exact ComfyUI HTTP port and a process instance UUID,
-so ports such as `8189` and `9189` and identical prompt IDs cannot collide.
+The repository works both as a direct `custom_nodes` checkout and as an installed Python package.
+Direct-checkout loading is covered by an isolated import regression test.
 
-> Each running ComfyUI process must be restarted once after installation. Wait for `running=0` and `pending=0` before restarting a production instance.
+### Headless server
+
+Disable the native dock on servers without a desktop session:
+
+```bash
+COMFY_PROGRESS_BRIDGE_AUTOSTART=0 \
+python main.py --listen 127.0.0.1 --port 8188
+```
+
+This does not disable the browser panel, UDP bridge, queue observer, or backend notifications.
+
+### Optional standalone desktop command
+
+```bash
+comfyui-progress-desktop --show
+```
+
+For a deterministic UI preview without a running ComfyUI instance:
+
+```bash
+comfyui-progress-desktop --demo --show
+```
 
 ## Browser panel
 
-The floating panel appears automatically near the upper-right corner of every ComfyUI page served
-by an installation containing this extension. It shows the connected server, queue count, current
-node, sampler percentage, and terminal state. The arrow button collapses the details and remembers
-that choice in the browser.
+The browser panel is served by ComfyUI from the plugin's `WEB_DIRECTORY` and loads automatically.
+It requires no separate process or UDP forwarding.
 
-The panel listens to ComfyUI's existing client-routed WebSocket events. It therefore follows the
-same privacy boundary as the normal ComfyUI interface instead of republishing one user's progress
-or error details to every connected browser. Queue status is used to return the panel to idle when
-an API-submitted job does not emit a client-specific terminal event.
+It displays:
 
-### Local ComfyUI
+- connected ComfyUI endpoint;
+- running and pending queue counts;
+- current node and friendly stage;
+- sampler progress percentage;
+- success, error, interruption, and idle states;
+- a persistent collapsed/expanded preference.
 
-1. Install the extension in the local ComfyUI `custom_nodes` directory.
-2. Restart ComfyUI.
-3. Open or refresh the ComfyUI page. The browser panel is ready immediately.
-4. The native PyQt6 dock also starts by default. Set `COMFY_PROGRESS_BRIDGE_AUTOSTART=0` before
-   starting ComfyUI if only the in-browser panel is wanted.
+The panel listens to ComfyUI's existing client-routed WebSocket events, preserving the normal client
+privacy boundary. It does not rebroadcast one user's prompt or execution details to all browsers.
 
-### Remote ComfyUI through SSH
+## Native desktop monitor
 
-Install and restart the extension **on the remote server**, preferably with native desktop startup
-disabled on a headless host:
+The optional PyQt6 dock supports:
 
-```bash
-COMFY_PROGRESS_BRIDGE_AUTOSTART=0 python main.py --listen 127.0.0.1 --port 8188
-```
+- multiple ComfyUI endpoints in one compact window;
+- local loopback and SSH-monitored remote endpoints;
+- endpoint-qualified state for identical prompt IDs across different servers;
+- live node and sampler progress;
+- workflow metadata-based friendly node names and stage labels;
+- simple and professional display modes;
+- dark, light, and system themes;
+- configurable opacity, collapse state, screen position, and position reset;
+- up to six PNG avatars with completion rotation;
+- Chinese, English, Japanese, and Korean UI text;
+- desktop Telegram, Weixin, and QQ notifications;
+- disabled, built-in ding, and custom-WAV completion audio;
+- explicit per-platform notification tests and audio tests;
+- hidden-window monitoring: hiding the dock does not stop sources or alerts;
+- bounded source shutdown so settings changes and exit do not freeze the UI.
 
-Forward the normal ComfyUI HTTP port from the local computer:
+Only quitting the desktop application stops its source and notification workers.
+
+## Remote ComfyUI
+
+### Browser access over SSH
+
+Install the extension on the remote ComfyUI host and forward its existing HTTP port:
 
 ```bash
 ssh -N -L 8188:127.0.0.1:8188 user@remote-server
 ```
 
-Then open `http://127.0.0.1:8188` locally. The plugin JavaScript is served through the same mapping,
-runs in the local browser, and receives progress through ComfyUI's existing WebSocket. No plugin,
-Python environment, PyQt6 process, SSH probe, or UDP port is needed on the local computer.
+Open `http://127.0.0.1:8188`. HTTP, the browser extension, and ComfyUI WebSocket traffic use the
+same tunnel. No local plugin checkout is required for browser-only use.
 
-For a reverse proxy instead of SSH, proxy both HTTP and WebSocket upgrades for the ComfyUI origin.
+### Desktop SSH source
 
-## Backend queue-complete notifications
+The desktop monitor can launch the included bounded probe through ordinary SSH. The probe reads
+authoritative queue snapshots on the remote machine and forwards compact NDJSON records to the local
+desktop process. It does not install a persistent daemon or expose a new network listener.
 
-Telegram and Weixin can notify directly from the ComfyUI Python process when the whole queue changes
-from busy to empty. This path does not require the desktop window to remain visible, Hermes or another
-gateway to be running, an LLM call, a browser, or a workflow node.
+## UDP schema v2
 
-For a local desktop installation, open the progress dock settings and use the separate **Backend
-queue-complete notifications** section. Telegram and Weixin have independent enable switches,
-targets, and test buttons. Select an owner-private credential env file containing only the required
-token keys, save, and restart ComfyUI. Backend mode is disabled by default and QQ is intentionally
-not available there.
+Every ComfyUI process sends compact best-effort datagrams to `127.0.0.1:30999` by default.
 
-For a headless or remote ComfyUI host, provision an owner-private backend JSON and credential file
-on that host and select it with `COMFY_PROGRESS_BRIDGE_BACKEND_CONFIG` before launch. See
-[Backend notification setup](docs/backend-notifications.md) for local and remote examples, file
-permissions, Weixin context-token requirements, and queue semantics.
+Each envelope contains:
 
-## Receive events
-
-Run the included receiver:
-
-```bash
-python examples/receive_progress.py
-```
-
-Then submit a normal ComfyUI workflow. The receiver prints newline-delimited JSON such as:
-
-```json
-{"schema":2,"endpoint":{"host":"127.0.0.1","port":8189},"instance_id":"70f12e92-a03d-4770-b080-1f90c9f1ed88","sequence":1,"observed_at":1787414400.0,"type":"executing","data":{"prompt_id":"abc","node":"4"}}
-{"schema":2,"endpoint":{"host":"127.0.0.1","port":8189},"instance_id":"70f12e92-a03d-4770-b080-1f90c9f1ed88","sequence":2,"observed_at":1787414400.1,"type":"progress","data":{"prompt_id":"abc","node":"24","value":9,"max":12}}
-```
-
-An external monitor can join `prompt_id` and `node` with the workflow graph returned by ComfyUI's `/queue` endpoint to display friendly stages such as model loading, sampling, VAE decode, and saving.
-
-## Configuration
-
-Environment variables must be set before starting ComfyUI:
-
-- `COMFY_PROGRESS_BRIDGE_HOST`: numeric IPv4 UDP destination, default `127.0.0.1` (hostnames are rejected to prevent DNS work on the event path)
-- `COMFY_PROGRESS_BRIDGE_PORT`: explicit UDP destination port, default `30999`
-- `COMFY_PROGRESS_BRIDGE_ENDPOINT_HOST`: numeric IPv4 host recorded in `endpoint.host`, default `127.0.0.1`
-
-Older releases derived a separate UDP port from each HTTP port. Schema v2 intentionally
-replaces that behavior with one shared listener. Existing deployments that require a fixed
-legacy destination can set `COMFY_PROGRESS_BRIDGE_PORT` explicitly, but receivers must read
-the schema-v2 envelope.
+- schema version;
+- endpoint host and exact ComfyUI HTTP port;
+- per-process UUID;
+- monotonically increasing sequence number;
+- observation timestamp;
+- allowlisted event type and bounded data.
 
 Example:
 
-```bash
-COMFY_PROGRESS_BRIDGE_PORT=41000 python main.py --port 8189
+```json
+{"schema":2,"endpoint":{"host":"127.0.0.1","port":8189},"instance_id":"70f12e92-a03d-4770-b080-1f90c9f1ed88","sequence":1,"observed_at":1787414400.0,"type":"executing","data":{"prompt_id":"abc","node":"4"}}
 ```
 
-Notification HTTPS requests honor validated `HTTPS_PROXY`/`NO_PROXY` settings and the native macOS
-system HTTPS proxy. Redirects remain disabled and API origins are fixed to the supported official
-hosts.
-
-## Event contract
-
-Only these event types are mirrored:
+Mirrored event types:
 
 - `executing`
 - `progress`
@@ -182,38 +262,140 @@ Only these event types are mirrored:
 - `execution_interrupted`
 - `execution_success`
 
-Only these data fields are eligible for forwarding:
+Eligible data fields:
 
 - `prompt_id`
 - `node`, `node_id`, `display_node`
 - `value`, `max`
 - `exception_message`, `node_type`
 
-Binary previews, workflow inputs, prompts, model names, images, and generated media are not forwarded.
-Each datagram is capped at 8192 bytes. `prompt_id` is limited to 256 characters, ordinary
-forwarded strings to 1024 characters, and error text to 4096 characters.
+Binary previews, workflow inputs, prompts, model names, images, video, audio, and generated media are
+never placed in UDP datagrams.
 
-## Security and compatibility
+Run the example receiver with:
 
-- The default destination is loopback. Setting a non-loopback destination can expose prompt IDs, node IDs, progress, and error messages to that network destination.
-- UDP is intentionally best-effort. A dropped progress packet does not affect inference.
-- The browser panel preserves ComfyUI's normal WebSocket client routing. The separate UDP mirror
-  still contains the compact allowlist below and should remain on loopback unless explicitly secured.
-- The implementation wraps an internal ComfyUI method, `PromptServer.send_sync`. The wrapper is small and covered by tests, but upstream internal API changes may require an update.
-- This repository targets Python 3.10+ and current ComfyUI releases.
+```bash
+python examples/receive_progress.py
+```
+
+## Configuration
+
+### Progress bridge
+
+Set these before starting ComfyUI:
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `COMFY_PROGRESS_BRIDGE_HOST` | `127.0.0.1` | Numeric IPv4 UDP destination; hostnames are rejected to keep DNS off the event path |
+| `COMFY_PROGRESS_BRIDGE_PORT` | `30999` | Shared UDP listener port |
+| `COMFY_PROGRESS_BRIDGE_ENDPOINT_HOST` | `127.0.0.1` | Host recorded in schema-v2 endpoint metadata |
+| `COMFY_PROGRESS_BRIDGE_AUTOSTART` | enabled | Set to `0` to disable native desktop auto-launch |
+
+### Backend notification configuration
+
+Local desktop users can configure the independent **Backend queue-complete notifications** section
+in the settings dialog and restart ComfyUI.
+
+Headless hosts can point to an owner-private JSON file:
+
+```bash
+COMFY_PROGRESS_BRIDGE_BACKEND_CONFIG=/secure/path/backend-notifications.json \
+COMFY_PROGRESS_BRIDGE_AUTOSTART=0 \
+python main.py --port 8188
+```
+
+Tokens remain in a separate fixed-key `KEY=value` file. The parser never sources or evaluates it as
+shell code. Telegram uses the official Bot API `sendMessage`; Weixin uses iLink `sendmessage` with a
+persisted context token and never calls `getupdates`.
+
+Outbound messaging still requires the ComfyUI host to have HTTPS access to the configured official
+API. A blocked institutional network fails open: inference continues, but the external message cannot
+be delivered until a permitted proxy or egress path exists.
+
+Notification HTTPS requests support validated `HTTPS_PROXY`/`NO_PROXY` values and the native macOS
+system HTTPS proxy.
+
+## Security and privacy
+
+- Backend notification mode is opt-in and disabled by default.
+- Default monitoring destinations are loopback-only.
+- No account system, cloud relay, analytics database, telemetry, or remote queue controls are added.
+- Credentials and context tokens are kept outside workflow JSON and source control.
+- Config, credential, and context files must be regular, current-user-owned, non-symlink files with
+  mode 0600.
+- Unknown backend JSON fields are rejected to prevent silent configuration typos.
+- API requests use fixed HTTPS origins, bounded bodies and headers, no redirects, and one total
+  monotonic deadline.
+- User-visible errors and startup logs never include tokens, targets, context tokens, or raw API
+  responses.
+- The original `PromptServer.send_sync` is called before any monitoring or notification work, with
+  positional/keyword arguments, return value, and client routing preserved.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Plugin does not appear in startup imports | Confirm the complete repository directory is directly under `custom_nodes` and restart ComfyUI |
+| Browser panel is missing | Hard-refresh the page and verify the plugin's `progress-panel.js` returns HTTP 200 |
+| Native dock does not open | Check `COMFY_PROGRESS_BRIDGE_AUTOSTART`; headless hosts should leave it disabled |
+| Backend reports disabled | Verify JSON schema, enabled platforms, 0600 permissions, ownership, credential path, and context path |
+| Telegram/Weixin times out | Verify HTTPS egress or an allowed HTTPS proxy on the ComfyUI host |
+| Weixin reports missing context | The configured peer must have a private persisted iLink context token |
+| UDP receiver sees nothing | Confirm the receiver binds the configured shared port and no other process owns it |
+| Remote desktop source reconnects | Verify SSH authentication, remote Python, probe path, and the ComfyUI loopback port |
+
+Monitoring and notification errors are intentionally recoverable and must not stop inference.
+
+## Update and uninstall
+
+Update the custom node:
+
+```bash
+cd /path/to/ComfyUI/custom_nodes/ComfyUI-Progress-Bridge
+git pull --ff-only
+python -m pip install -r requirements.txt
+```
+
+Restart only after the target ComfyUI queue is empty.
+
+To uninstall, stop that ComfyUI instance and remove the plugin directory. Desktop settings and
+backend credentials are stored separately in the user configuration directory so they can be
+reviewed or removed independently.
 
 ## Development
 
 ```bash
+git clone https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge.git
+cd ComfyUI-Progress-Bridge
 uv sync --extra dev
 uv run pytest -q
 uv run ruff check .
+uv build
 ```
+
+The CI workflow repeats the full test, lint, compile, and build gates on every push and pull request
+for all supported Python versions.
+
+## Project boundaries
+
+This project deliberately does not add:
+
+- branding-only or placeholder workflow nodes;
+- prompt submission, cancellation, or queue-clearing controls;
+- prompt/model/media forwarding;
+- cloud relays, accounts, telemetry, or historical analytics;
+- LAN listeners by default;
+- an LLM or external agent runtime dependency.
 
 ## Comfy Registry
 
-The repository follows the standard ComfyUI custom-node layout and includes PEP 621 metadata. Registry-specific `[tool.comfy]` publisher metadata is intentionally not guessed; it should be added after the owner creates a Publisher ID at [Comfy Registry](https://registry.comfy.org/).
+The repository follows the standard ComfyUI custom-node layout and includes PEP 621 metadata.
+Registry publisher metadata will be added after the project owner creates the corresponding Comfy
+Registry Publisher ID.
 
 ## License
 
-MIT
+Code is released under the [MIT License](LICENSE).
+
+The Silver Wolf sticker is decorative fan art generated for this README. This project is not
+affiliated with or endorsed by HoYoverse.
