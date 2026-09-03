@@ -32,6 +32,11 @@ jobs:
           version: "0.12.9"
           enable-cache: true
 
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+
       - name: Install locked development environment
         run: uv sync --locked --extra dev
 
