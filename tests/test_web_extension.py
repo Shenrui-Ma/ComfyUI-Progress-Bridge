@@ -39,7 +39,96 @@ def test_browser_extension_registers_and_listens_for_bridge_events():
         assert f'api.addEventListener("{event_type}"' in source
     assert "function readCollapsed()" in source
     assert "function writeCollapsed(collapsed)" in source
+    assert 'className = "cpb-settings-button"' in source
+    assert 'className = "cpb-drag-handle"' in source
+    assert 'header.addEventListener("pointerdown"' in source
+    assert 'window.addEventListener("pointermove"' in source
+    assert 'window.addEventListener("pointerup"' in source
+    assert 'window.addEventListener("resize"' in source
+    assert "Reset position" in source
     assert ".innerHTML" not in source
+
+
+def test_browser_panel_preferences_are_bounded_and_fail_closed():
+    module_url = (WEB / "panel-preferences.mjs").as_uri()
+    output = run_state_module(
+        f"""
+        import {{
+          DEFAULT_PANEL_PREFERENCES,
+          readPanelPreferences,
+          sanitizePanelPreferences,
+          writePanelPreferences,
+        }} from {json.dumps(module_url)};
+        const hostileStorage = {{
+          getItem() {{ throw new Error("blocked"); }},
+          setItem() {{ throw new Error("blocked"); }},
+        }};
+        const invalid = sanitizePanelPreferences({{
+          theme: "neon",
+          opacity: 1000,
+          scale: -5,
+          collapsed: "yes",
+          position: {{x: "1", y: Infinity}},
+        }});
+        const written = [];
+        const storage = {{
+          getItem() {{ return JSON.stringify({{
+            theme: "light", opacity: 63, scale: 115, collapsed: true,
+            position: {{x: 20.2, y: 40.8}},
+          }}); }},
+          setItem(key, value) {{ written.push([key, JSON.parse(value)]); }},
+        }};
+        const loaded = readPanelPreferences(storage);
+        writePanelPreferences(storage, loaded);
+        console.log(JSON.stringify({{
+          defaults: DEFAULT_PANEL_PREFERENCES,
+          hostile: readPanelPreferences(hostileStorage),
+          invalid,
+          loaded,
+          written,
+        }}));
+        """
+    )
+
+    expected_defaults = {
+        "theme": "system",
+        "opacity": 92,
+        "scale": 100,
+        "collapsed": False,
+        "position": None,
+    }
+    assert output["defaults"] == expected_defaults
+    assert output["hostile"] == expected_defaults
+    assert output["invalid"] == expected_defaults
+    assert output["loaded"] == {
+        "theme": "light",
+        "opacity": 63,
+        "scale": 115,
+        "collapsed": True,
+        "position": {"x": 20, "y": 41},
+    }
+    assert output["written"][0][0] == "comfy-progress-bridge-browser-settings-v1"
+    assert output["written"][0][1] == output["loaded"]
+
+
+def test_browser_panel_position_is_clamped_inside_viewport():
+    module_url = (WEB / "panel-preferences.mjs").as_uri()
+    output = run_state_module(
+        f"""
+        import {{ clampPanelPosition }} from {json.dumps(module_url)};
+        console.log(JSON.stringify({{
+          ordinary: clampPanelPosition({{x: 900, y: -40}}, {{width: 300, height: 220}},
+            {{width: 1024, height: 768}}),
+          tiny: clampPanelPosition({{x: 50, y: 80}}, {{width: 400, height: 300}},
+            {{width: 240, height: 180}}),
+        }}));
+        """
+    )
+
+    assert output == {
+        "ordinary": {"x": 716, "y": 8},
+        "tiny": {"x": 8, "y": 8},
+    }
 
 
 def test_browser_state_reduces_progress_and_terminal_events():

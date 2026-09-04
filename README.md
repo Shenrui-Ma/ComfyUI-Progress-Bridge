@@ -35,7 +35,7 @@ _37-second English v0.2.0 walkthrough._
 | Area | Included functionality |
 | --- | --- |
 | ComfyUI integration | Import-time server extension, no graph nodes, no workflow mutation, idempotent `PromptServer.send_sync` wrapping |
-| Browser panel | Automatically served with ComfyUI, zero configuration, queue count, active node, sampler percentage, terminal state, persistent collapse state |
+| Browser panel | Automatically served with ComfyUI, queue/node/progress state, drag and keyboard movement, theme, opacity, scale, position reset, persistent settings |
 | Desktop monitor | Frameless PyQt6 dock, multi-endpoint cards, local and SSH sources, simple/professional modes, themes, opacity, drag/restore, collapse, avatars |
 | Progress model | Running and pending prompts, friendly node/stage resolution, authoritative queue snapshots, client-routed execution events |
 | Languages | Simplified Chinese, English, Japanese, and Korean |
@@ -160,7 +160,11 @@ It displays:
 - current node and friendly stage;
 - sampler progress percentage;
 - success, error, interruption, and idle states;
-- a persistent collapsed/expanded preference.
+- mouse/touch dragging and keyboard arrow-key movement;
+- system, dark, and light themes;
+- configurable opacity and 80–125% scale;
+- viewport-clamped position restore and one-click position reset;
+- persistent appearance, position, and collapsed/expanded settings.
 
 The panel listens to ComfyUI's existing client-routed WebSocket events, preserving the normal client
 privacy boundary. It does not rebroadcast one user's prompt or execution details to all browsers.
@@ -308,7 +312,7 @@ The following limits are enforced by code and regression tests rather than being
 
 | Metric | Enforced value / behavior |
 | --- | --- |
-| Automated regression suite | **428 tests** in the current release line |
+| Automated regression suite | **430 tests** in the current release line |
 | CI runtime matrix | Python **3.10, 3.11, 3.12, and 3.13** |
 | UDP datagram ceiling | **8192 bytes** |
 | Prompt ID bound | **256 characters** |
