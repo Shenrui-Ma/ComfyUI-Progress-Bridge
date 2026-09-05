@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
-</p>
-
 # ComfyUI Progress Bridge
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
@@ -11,13 +7,17 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom%20Node-111111)](https://github.com/comfyanonymous/ComfyUI)
 [![License](https://img.shields.io/badge/License-MIT-6C8EFF)](LICENSE)
 
-A lightweight, privacy-first ComfyUI server extension with three complementary progress surfaces:
-a zero-configuration browser panel, an optional native desktop dock, and a bounded UDP event bridge.
-It can also send Telegram and Weixin notifications directly from the ComfyUI backend when the real
-execution queue finishes.
+<img align="right" src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
 
-The extension intentionally adds **no visible workflow nodes**. It monitors ComfyUI without changing
-workflow JSON, queue controls, prompts, models, or generated media.
+Lightweight, privacy-first ComfyUI progress monitoring with a browser panel, optional desktop dock,
+and UDP bridge. Sends Telegram and Weixin alerts when the queue finishes—**no extra workflow nodes
+or workflow changes required**.
+
+<br clear="right">
+
+<p align="center">
+  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
+</p>
 
 ## Demo video
 
@@ -412,10 +412,6 @@ This project deliberately does not add:
 The repository follows the standard ComfyUI custom-node layout and includes PEP 621 metadata.
 Registry publisher metadata will be added after the project owner creates the corresponding Comfy
 Registry Publisher ID.
-
-<p align="center">
-  <img src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
-</p>
 
 ## License
 

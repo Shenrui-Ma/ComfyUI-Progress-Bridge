@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
-</p>
-
 # ComfyUI Progress Bridge
 
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
@@ -11,12 +7,16 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom%20Node-111111)](https://github.com/comfyanonymous/ComfyUI)
 [![License](https://img.shields.io/badge/License-MIT-6C8EFF)](LICENSE)
 
-一个轻量、隐私优先的 ComfyUI 服务端扩展，提供三种互补的进度展示方式：零配置浏览器
-面板、可选的原生桌面悬浮窗，以及有严格边界的 UDP 事件桥。它还能在真实执行队列完成
-时，直接从 ComfyUI 后端发送 Telegram 和微信通知。
+<img align="right" src="docs/images/silver-wolf-sticker.png" width="220" alt="银狼赛博黑客 Q 版贴纸">
 
-本扩展有意保持 **零可见工作流节点**。它不会修改工作流 JSON、队列控制、提示词、模型
-或生成媒体。
+轻量、隐私优先的 ComfyUI 进度插件，提供浏览器面板、可选桌面悬浮窗和 UDP 事件桥。
+队列完成后可直接发送 Telegram/微信提醒，**无需额外工作流节点，不改动工作流**。
+
+<br clear="right">
+
+<p align="center">
+  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
+</p>
 
 ## 演示视频
 
@@ -395,10 +395,6 @@ CI 会在每次 push 和 pull request 时，针对全部受支持 Python 版本�
 
 仓库遵循标准 ComfyUI 自定义节点布局，并包含 PEP 621 元数据。项目所有者创建对应的
 Comfy Registry Publisher ID 后，再补充 Registry publisher 元数据。
-
-<p align="center">
-  <img src="docs/images/silver-wolf-sticker.png" width="220" alt="银狼赛博黑客 Q 版贴纸">
-</p>
 
 ## 许可证
 
