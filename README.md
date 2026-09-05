@@ -7,13 +7,9 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom%20Node-111111)](https://github.com/comfyanonymous/ComfyUI)
 [![License](https://img.shields.io/badge/License-MIT-6C8EFF)](LICENSE)
 
-<img align="right" src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
-
 Lightweight, privacy-first ComfyUI progress monitoring with a browser panel, optional desktop dock,
 and UDP bridge. Sends Telegram and Weixin alerts when the queue finishes—**no extra workflow nodes
 or workflow changes required**.
-
-<br clear="right">
 
 <p align="center">
   <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
@@ -412,6 +408,10 @@ This project deliberately does not add:
 The repository follows the standard ComfyUI custom-node layout and includes PEP 621 metadata.
 Registry publisher metadata will be added after the project owner creates the corresponding Comfy
 Registry Publisher ID.
+
+<p align="center">
+  <img src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
+</p>
 
 ## License
 
