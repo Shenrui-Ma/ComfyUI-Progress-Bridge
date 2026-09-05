@@ -12,7 +12,7 @@
 队列完成后可直接发送 Telegram/微信提醒，**无需额外工作流节点，不改动工作流**。
 
 <p align="center">
-  <img src="docs/images/comfyui-progress-overview.png" width="576" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
+  <img src="docs/images/comfyui-progress-overview.png" width="672" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
 </p>
 
 ## 演示视频
