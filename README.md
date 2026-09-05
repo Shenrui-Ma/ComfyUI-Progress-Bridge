@@ -12,7 +12,7 @@ and UDP bridge. Sends Telegram and Weixin alerts when the queue finishes—**no 
 or workflow changes required**.
 
 <p align="center">
-  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
+  <img src="docs/images/comfyui-progress-overview.png" width="576" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
 </p>
 
 ## Demo video
