@@ -18,16 +18,23 @@
 
 <br clear="right">
 
+<p align="center">
+  <img src="docs/images/comfyui-progress-dock.png" width="480" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
+</p>
+<p align="center"><sub>多端点进度监控与桌面设置，点击图片查看原图。</sub></p>
+
 ## 演示视频
+
+<!-- GitHub 会将附件链接替换为原生播放器，并忽略 video 标签的宽度属性。 -->
+<div align="center">
+<table><tr><td width="320">
 
 https://github.com/user-attachments/assets/2162ce3f-f9c2-4dfa-8ec7-2e9775b76271
 
-_37 秒中文功能演示。_
+</td></tr></table>
+</div>
 
-<p align="center">
-  <img src="docs/images/comfyui-progress-dock.png" width="400" alt="ComfyUI Progress Bridge 桌面悬浮窗，展示队列、活动节点和采样进度">
-</p>
-<p align="center"><sub>原生多端点桌面悬浮窗，实时展示队列、节点与采样进度。</sub></p>
+<p align="center"><sub>37 秒中文功能演示。</sub></p>
 
 ## 功能概览
 

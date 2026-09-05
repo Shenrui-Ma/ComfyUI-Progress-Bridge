@@ -19,16 +19,23 @@ workflow JSON, queue controls, prompts, models, or generated media.
 
 <br clear="right">
 
+<p align="center">
+  <img src="docs/images/comfyui-progress-dock.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
+</p>
+<p align="center"><sub>Multi-endpoint progress monitoring and desktop settings. Click the image for full size.</sub></p>
+
 ## Demo video
+
+<!-- GitHub replaces attachment links with native players and ignores video width attributes. -->
+<div align="center">
+<table><tr><td width="320">
 
 https://github.com/user-attachments/assets/9431ad9d-0a61-4600-bb0c-75bd17643257
 
-_37-second English v0.2.0 walkthrough._
+</td></tr></table>
+</div>
 
-<p align="center">
-  <img src="docs/images/comfyui-progress-dock.png" width="400" alt="ComfyUI Progress Bridge desktop dock showing queue, active node, and sampler progress">
-</p>
-<p align="center"><sub>Native multi-endpoint desktop dock with live queue, node, and sampler progress.</sub></p>
+<p align="center"><sub>37-second English v0.2.0 walkthrough.</sub></p>
 
 ## Highlights
 
