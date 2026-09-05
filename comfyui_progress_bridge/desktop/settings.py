@@ -204,6 +204,19 @@ class QQNotificationConfig:
 
 
 @dataclass(frozen=True)
+class ServerChanNotificationConfig:
+    enabled: bool = False
+    key_file: str = field(
+        default_factory=lambda: str(config_directory() / "secrets" / "serverchan.key")
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("ServerChan enabled must be a bool")
+        _text(self.key_file, "ServerChan key file")
+
+
+@dataclass(frozen=True)
 class NotificationConfig:
     enabled: bool = False
     env_file: str = field(
@@ -213,6 +226,7 @@ class NotificationConfig:
     telegram: TelegramNotificationConfig = field(default_factory=TelegramNotificationConfig)
     weixin: WeixinNotificationConfig = field(default_factory=WeixinNotificationConfig)
     qq: QQNotificationConfig = field(default_factory=QQNotificationConfig)
+    serverchan: ServerChanNotificationConfig = field(default_factory=ServerChanNotificationConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -228,6 +242,8 @@ class NotificationConfig:
             raise ValueError("weixin must be WeixinNotificationConfig")
         if not isinstance(self.qq, QQNotificationConfig):
             raise ValueError("qq must be QQNotificationConfig")
+        if not isinstance(self.serverchan, ServerChanNotificationConfig):
+            raise ValueError("serverchan must be ServerChanNotificationConfig")
 
 
 @dataclass(frozen=True)
@@ -246,6 +262,7 @@ class BackendNotificationSettings:
             context_store=str(config_directory() / "weixin")
         )
     )
+    serverchan: ServerChanNotificationConfig = field(default_factory=ServerChanNotificationConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -260,11 +277,13 @@ class BackendNotificationSettings:
             raise ValueError("backend telegram must be TelegramNotificationConfig")
         if not isinstance(self.weixin, WeixinNotificationConfig):
             raise ValueError("backend weixin must be WeixinNotificationConfig")
+        if not isinstance(self.serverchan, ServerChanNotificationConfig):
+            raise ValueError("backend serverchan must be ServerChanNotificationConfig")
         if self.enabled:
-            if not self.credentials_file.strip():
+            if (self.telegram.enabled or self.weixin.enabled) and not self.credentials_file.strip():
                 raise ValueError("backend credential file is required when enabled")
-            if not self.telegram.enabled and not self.weixin.enabled:
-                raise ValueError("enable Telegram or Weixin for backend notifications")
+            if not any((self.telegram.enabled, self.weixin.enabled, self.serverchan.enabled)):
+                raise ValueError("enable Telegram, Weixin or ServerChan for backend notifications")
 
 
 @dataclass(frozen=True)
@@ -380,6 +399,7 @@ class AppSettings:
                 ("telegram", TelegramNotificationConfig),
                 ("weixin", WeixinNotificationConfig),
                 ("qq", QQNotificationConfig),
+                ("serverchan", ServerChanNotificationConfig),
             ):
                 value = notification_data.get(key)
                 if value is not None:
@@ -400,6 +420,7 @@ class AppSettings:
             for key, config_type in (
                 ("telegram", TelegramNotificationConfig),
                 ("weixin", WeixinNotificationConfig),
+                ("serverchan", ServerChanNotificationConfig),
             ):
                 value = backend_data.get(key)
                 if value is not None:

@@ -98,7 +98,7 @@ def test_task5_dialog_has_localized_targets_switches_and_test_controls(app, lang
     ):
         assert translator(key) in labels
     assert set(dialog.notification_test_buttons) == {"telegram", "weixin", "qq"}
-    assert set(dialog.backend_notification_test_buttons) == {"telegram", "weixin"}
+    assert set(dialog.backend_notification_test_buttons) == {"telegram", "weixin", "serverchan"}
     assert all(
         translator("test_notification") in button.text()
         for button in dialog.notification_test_buttons.values()

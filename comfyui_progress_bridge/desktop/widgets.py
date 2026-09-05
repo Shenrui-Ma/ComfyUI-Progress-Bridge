@@ -7,9 +7,10 @@ import threading
 from dataclasses import replace
 from datetime import datetime
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
+    QDesktopServices,
     QFontMetrics,
     QKeyEvent,
     QMouseEvent,
@@ -53,6 +54,7 @@ from ..monitor.models import (
     TaskState,
 )
 from .i18n import LANGUAGES, Translator, localized_result
+from .secret_store import SendKeyStore, validate_sendkey
 from .settings import (
     AppSettings,
     AudioConfig,
@@ -60,6 +62,7 @@ from .settings import (
     EndpointConfig,
     NotificationConfig,
     QQNotificationConfig,
+    ServerChanNotificationConfig,
     SettingsStore,
     TelegramNotificationConfig,
     WeixinNotificationConfig,
@@ -385,11 +388,23 @@ class SettingsDialog(QDialog):
         *,
         notification_sender=None,
         audio_player=None,
+        secret_store=None,
     ) -> None:
         super().__init__(parent)
         self.original = settings
         self.notification_sender = notification_sender
         self.audio_player = audio_player
+        self._serverchan_store = None
+        self._serverchan_delete_pending = False
+        self._serverchan_storage_error = False
+        try:
+            self._serverchan_store = secret_store or SendKeyStore(
+                settings.backend_notifications.serverchan.key_file
+            )
+            self._serverchan_key_present = self._serverchan_store.has_key()
+        except (OSError, ValueError):
+            self._serverchan_key_present = False
+            self._serverchan_storage_error = True
         self.test_finished.connect(self._test_action_finished)
         self._test_worker = _TestActionWorker(self.test_finished.emit)
         self._test_worker_closed = False
@@ -588,6 +603,54 @@ class SettingsDialog(QDialog):
         self.backend_weixin_context_store = QLineEdit(backend.weixin.context_store)
         backend_form.addRow(self.t("backend_notifications"), self.backend_enabled)
         backend_form.addRow(self.t("backend_name"), self.backend_name)
+        self.serverchan_enabled = QCheckBox(self.t("serverchan"))
+        self.serverchan_enabled.setChecked(backend.serverchan.enabled)
+        self.serverchan_sendkey = QLineEdit()
+        self.serverchan_sendkey.setEchoMode(QLineEdit.EchoMode.Password)
+        self.serverchan_sendkey.setInputMethodHints(
+            Qt.InputMethodHint.ImhSensitiveData | Qt.InputMethodHint.ImhNoPredictiveText
+            | Qt.InputMethodHint.ImhNoAutoUppercase
+        )
+        self.serverchan_sendkey.setMaxLength(1024)
+        self.serverchan_sendkey.setAccessibleName(self.t("serverchan_sendkey"))
+        self.serverchan_sendkey.setPlaceholderText(self.t("serverchan_key_placeholder"))
+        self.serverchan_sendkey.setEnabled(not self._serverchan_key_present)
+        self.serverchan_key_status = QLabel(self.t(
+            "serverchan_storage_error" if self._serverchan_storage_error else
+            "configured" if self._serverchan_key_present else "not_configured"
+        ))
+        self.serverchan_key_status.setWordWrap(True)
+        self.serverchan_replace_key = QPushButton(self.t("serverchan_replace"))
+        self.serverchan_delete_key = QPushButton(self.t("serverchan_delete"))
+        self.serverchan_delete_key.setEnabled(self._serverchan_key_present)
+        self.serverchan_replace_key.clicked.connect(self._replace_serverchan_key)
+        self.serverchan_delete_key.clicked.connect(self._delete_serverchan_key)
+        self.serverchan_sendkey.textEdited.connect(self._serverchan_key_edited)
+        self.serverchan_enabled.toggled.connect(
+            lambda enabled: self.backend_enabled.setChecked(True) if enabled else None
+        )
+        key_actions = QHBoxLayout()
+        key_actions.addWidget(self.serverchan_key_status, 1)
+        key_actions.addWidget(self.serverchan_replace_key)
+        key_actions.addWidget(self.serverchan_delete_key)
+        backend_form.addRow("", self.serverchan_enabled)
+        backend_form.addRow(self.t("serverchan_sendkey"), self.serverchan_sendkey)
+        backend_form.addRow(self.t("credential_state"), key_actions)
+        self.serverchan_get_key = QPushButton(self.t("serverchan_get_key"))
+        self.serverchan_get_key.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://sct.ftqq.com/sendkey/"))
+        )
+        self.serverchan_test_button = QPushButton(f"{self.t('test_notification')} · Server酱")
+        self.serverchan_test_button.clicked.connect(
+            lambda: self._test_notification("serverchan", backend=True)
+        )
+        serverchan_actions = QHBoxLayout()
+        serverchan_actions.addWidget(self.serverchan_get_key)
+        serverchan_actions.addWidget(self.serverchan_test_button)
+        backend_form.addRow("", serverchan_actions)
+        key_note = QLabel(self.t("serverchan_note"))
+        key_note.setWordWrap(True)
+        backend_form.addRow("", key_note)
         backend_form.addRow(self.t("credential_file"), self.backend_env_file)
         backend_form.addRow(self.t("timeout"), self.backend_timeout)
         backend_form.addRow("Telegram", self.backend_telegram_enabled)
@@ -597,8 +660,8 @@ class SettingsDialog(QDialog):
         backend_form.addRow(self.t("weixin_target"), self.backend_weixin_target)
         backend_form.addRow(self.t("weixin_account"), self.backend_weixin_account)
         backend_form.addRow(self.t("context_store"), self.backend_weixin_context_store)
-        backend_test_row = QHBoxLayout()
-        self.backend_notification_test_buttons = {}
+        backend_test_row = QVBoxLayout()
+        self.backend_notification_test_buttons = {"serverchan": self.serverchan_test_button}
         for platform in ("telegram", "weixin"):
             button = QPushButton(f"{self.t('test_notification')} · backend {platform}")
             button.clicked.connect(
@@ -652,8 +715,9 @@ class SettingsDialog(QDialog):
 
     def _show_test_result(self, result) -> None:
         ok = bool(getattr(result, "ok", False))
-        prefix = self.t("test_success" if ok else "test_failure")
         code = str(getattr(result, "code", "api_error"))
+        prefix = self.t("test_accepted" if code == "accepted" else
+                        "test_success" if ok else "test_failure")
         detail = localized_result(self.original.language, code)
         self.validation_label.setStyleSheet("color: #287a36;" if ok else "color: #d33;")
         self.validation_label.setText(f"{prefix}: {detail}")
@@ -674,6 +738,8 @@ class SettingsDialog(QDialog):
             return
         try:
             candidate = self.result_settings()
+            if platform == "serverchan":
+                self.validate_serverchan_key_action(candidate)
         except (AttributeError, TypeError, ValueError):
             from .notifications import SafeResult
 
@@ -691,15 +757,22 @@ class SettingsDialog(QDialog):
                     telegram=backend_config.telegram,
                     weixin=backend_config.weixin,
                     qq=QQNotificationConfig(),
+                    serverchan=backend_config.serverchan,
                 ),
             )
+
+        # Capture only this explicit test's new key; opening the dialog never loads a saved key.
+        test_key = self.serverchan_sendkey.text().strip() if platform == "serverchan" else ""
 
         def run():
             sender = self.notification_sender
             if sender is None:
                 from .notifications import NotificationSender
 
-                sender = NotificationSender(credential_environ={} if backend else None)
+                sender = NotificationSender(
+                    credential_environ={} if backend else None,
+                    **({"serverchan_sendkey": test_key} if test_key else {}),
+                )
             text = self.t("test_notification")
             return sender.send_platform(platform, text, candidate)
 
@@ -739,16 +812,20 @@ class SettingsDialog(QDialog):
             self._test_worker.shutdown(0.25)
 
     def done(self, result: int) -> None:
+        if result != QDialog.DialogCode.Accepted:
+            self.serverchan_sendkey.clear()
         self._shutdown_test_worker()
         super().done(result)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self.serverchan_sendkey.clear()
         self._shutdown_test_worker()
         super().closeEvent(event)
 
     def _validate_and_accept(self) -> None:
         try:
-            self.result_settings()
+            candidate = self.result_settings()
+            self.validate_serverchan_key_action(candidate)
         except (AttributeError, TypeError, ValueError) as exc:
             message = f"{self.t('error')}: {exc}"
             self.validation_label.setText(message)
@@ -756,6 +833,55 @@ class SettingsDialog(QDialog):
             return
         self.validation_label.clear()
         self.accept()
+
+    def _replace_serverchan_key(self) -> None:
+        self._serverchan_delete_pending = False
+        self.serverchan_sendkey.clear()
+        self.serverchan_sendkey.setEnabled(True)
+        self.serverchan_sendkey.setFocus()
+        self.serverchan_key_status.setText(self.t(
+            "configured" if self._serverchan_key_present else "not_configured"
+        ))
+
+    def _serverchan_key_edited(self, _text: str) -> None:
+        self._serverchan_delete_pending = False
+
+    def _delete_serverchan_key(self) -> None:
+        answer = QMessageBox.question(
+            self, self.t("serverchan_delete"), self.t("serverchan_delete_confirm"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._serverchan_delete_pending = True
+        self.serverchan_sendkey.clear()
+        self.serverchan_sendkey.setEnabled(False)
+        self.serverchan_enabled.setChecked(False)
+        if not (self.backend_telegram_enabled.isChecked()
+                or self.backend_weixin_enabled.isChecked()):
+            self.backend_enabled.setChecked(False)
+        self.serverchan_key_status.setText(self.t("serverchan_delete_pending"))
+
+    def validate_serverchan_key_action(self, candidate: AppSettings) -> None:
+        key = self.serverchan_sendkey.text()
+        if key:
+            validate_sendkey(key)
+        elif (candidate.backend_notifications.enabled
+              and candidate.backend_notifications.serverchan.enabled
+              and (self._serverchan_delete_pending or not self._serverchan_key_present)):
+            raise ValueError(self.t("serverchan_missing_key"))
+
+    def commit_serverchan_key(self) -> None:
+        """Called only after Save and successful persistence of non-secret settings."""
+        if self._serverchan_store is None:
+            if self._serverchan_delete_pending or self.serverchan_sendkey.text():
+                raise ValueError(self.t("serverchan_storage_error"))
+            return
+        if self._serverchan_delete_pending:
+            self._serverchan_store.delete()
+        elif self.serverchan_sendkey.text():
+            self._serverchan_store.save(validate_sendkey(self.serverchan_sendkey.text()))
 
     def _pick_avatar(self, edit: QLineEdit) -> None:
         path, _ = QFileDialog.getOpenFileName(self, self.t("avatar_files"), "", "PNG (*.png)")
@@ -792,6 +918,7 @@ class SettingsDialog(QDialog):
             enabled=self.notifications_enabled.isChecked(),
             env_file=self.env_file.text().strip(),
             timeout=float(self.timeout.text().strip()),
+            serverchan=self.original.notifications.serverchan,
             telegram=TelegramNotificationConfig(
                 enabled=self.telegram_enabled.isChecked(),
                 chat_id=self.telegram_target.text().strip(),
@@ -819,6 +946,10 @@ class SettingsDialog(QDialog):
             name=self.backend_name.text().strip(),
             credentials_file=self.backend_env_file.text().strip(),
             timeout=float(self.backend_timeout.text().strip()),
+            serverchan=ServerChanNotificationConfig(
+                enabled=self.serverchan_enabled.isChecked(),
+                key_file=self.original.backend_notifications.serverchan.key_file,
+            ),
             telegram=TelegramNotificationConfig(
                 enabled=self.backend_telegram_enabled.isChecked(),
                 chat_id=self.backend_telegram_target.text().strip(),
@@ -1145,17 +1276,37 @@ class ProgressWindow(QWidget):
         dialog = SettingsDialog(dialog_settings, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        self.save_dialog_settings(dialog)
+
+    def save_dialog_settings(self, dialog: SettingsDialog) -> bool:
+        """Persist public settings first; revert them if the atomic key operation fails."""
         try:
             candidate = dialog.result_settings()
-        except (AttributeError, TypeError, ValueError) as exc:
+            dialog.validate_serverchan_key_action(candidate)
+        except (AttributeError, TypeError, ValueError):
+            dialog.serverchan_sendkey.clear()
             QMessageBox.warning(
-                self, self.translator("settings"), f"{self.translator('error')}: {exc}"
+                self, self.translator("settings"), self.translator("serverchan_save_error")
             )
-            return
+            return False
         if not self.safe_save(candidate):
-            return
+            dialog.serverchan_sendkey.clear()
+            return False
+        try:
+            dialog.commit_serverchan_key()
+        except (OSError, ValueError):
+            try:
+                self.store.save(self.persisted_settings)
+                message = self.translator("serverchan_save_error")
+            except (OSError, TypeError, ValueError):
+                message = self.translator("serverchan_partial_save_error")
+            QMessageBox.warning(self, self.translator("settings"), message)
+            return False
+        finally:
+            dialog.serverchan_sendkey.clear()
         self.apply_settings(candidate)
         self.settings_applied.emit(candidate)
+        return True
 
     def clamp_to(self, available: QRect) -> QPoint:
         maximum_x = max(available.left(), available.right() - self.width() + 1)

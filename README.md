@@ -37,7 +37,7 @@ https://github.com/user-attachments/assets/ce0e2bae-dbbf-43d0-9324-390e75fa48a0
 | Progress model | Running and pending prompts, friendly node/stage resolution, authoritative queue snapshots, client-routed execution events |
 | Languages | Simplified Chinese, English, Japanese, and Korean |
 | Desktop alerts | Telegram, Weixin, QQ, completion audio, platform-specific test actions |
-| Backend alerts | Telegram and Weixin, independently enabled and tested, triggered inside the ComfyUI process when a busy queue becomes empty |
+| Backend alerts | Telegram, direct Weixin/iLink and ServerChan Turbo, independently enabled and tested; triggered when the ComfyUI queue becomes empty |
 | Audio | Disabled, built-in ding, or validated custom WAV |
 | Remote monitoring | SSH probe with bounded reconnect/shutdown behavior; no remote agent service required |
 | Packaging | Standard ComfyUI custom-node layout, PEP 621 wheel/sdist, browser assets, CLI entry point, GitHub Actions matrix |
@@ -95,6 +95,11 @@ comfyui-progress-desktop --demo --show
 ```
 
 ## Backend queue-complete notifications
+
+For WeChat onboarding via **ServerChan Turbo**, enter your own SendKey in the native dock's
+**Settings → Backend queue-complete notifications → WeChat via ServerChan Turbo** section.
+Saved keys are not displayed again; replacement/deletion is explicit. This optional third-party
+relay is separate from direct iLink. See [setup and storage security](docs/serverchan-setup.md).
 
 Backend notifications are part of this plugin. They do not require an agent framework, LLM,
 desktop window, browser tab, or notification workflow node.
@@ -315,7 +320,7 @@ The following limits are enforced by code and regression tests rather than being
 
 | Metric | Enforced value / behavior |
 | --- | --- |
-| Automated regression suite | **453 tests** as of 2026-09-05 |
+| Automated regression suite | **532 tests** as of 2026-09-05; the Windows DPAPI test requires Windows |
 | CI runtime matrix | Python **3.10, 3.11, 3.12, and 3.13** |
 | UDP datagram ceiling | **8192 bytes** |
 | Prompt ID bound | **256 characters** |

@@ -85,6 +85,11 @@ REQUIRED_KEYS = (
     "backend_notifications",
     "backend_name",
     "backend_restart_required",
+    "serverchan", "serverchan_sendkey", "serverchan_key_placeholder",
+    "serverchan_replace", "serverchan_delete", "serverchan_delete_confirm",
+    "serverchan_delete_pending", "serverchan_missing_key", "serverchan_note",
+    "serverchan_storage_error", "serverchan_save_error", "serverchan_partial_save_error",
+    "serverchan_get_key", "test_accepted",
     "source_timeout",
     "source_refused",
     "source_auth",
@@ -176,6 +181,34 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "backend_notifications": "Backend queue-complete notifications",
         "backend_name": "Backend display name",
         "backend_restart_required": "Restart ComfyUI after saving backend settings",
+        "serverchan": "WeChat via ServerChan Turbo",
+        "serverchan_sendkey": "SendKey (SCT…)",
+        "serverchan_key_placeholder": "Enter a new key; leave blank to keep the saved key",
+        "serverchan_replace": "Replace key",
+        "serverchan_delete": "Delete key",
+        "serverchan_delete_confirm": (
+            "Delete the saved SendKey when you click Save? Cancel keeps it."
+        ),
+        "serverchan_delete_pending": "Will be deleted on Save",
+        "serverchan_missing_key": "Enter a ServerChan Turbo SendKey before enabling this channel",
+        "serverchan_note": (
+            "Get your own SCT SendKey and bind a WeChat channel on ServerChan. "
+            "Save stores it separately; it is never filled back into this form. "
+            "macOS/Linux use owner-private files (not encrypted); Windows uses user-bound "
+            "encryption. Notifications pass through ServerChan; free limits apply. "
+            "Remote ComfyUI needs its own host-side setup. Test does not save the key."
+        ),
+        "serverchan_storage_error": "Key storage is unavailable or unsafe",
+        "serverchan_save_error": (
+            "Could not save safely. Your changes were not applied; "
+            "check settings and private key storage."
+        ),
+        "serverchan_partial_save_error": (
+            "Key storage failed and settings could not be restored. "
+            "Check the saved configuration before restarting ComfyUI."
+        ),
+        "serverchan_get_key": "Get SendKey",
+        "test_accepted": "Request accepted",
         "source_timeout": "Connection timed out; reconnecting…",
         "source_refused": "Connection refused; reconnecting…",
         "source_auth": "SSH authentication failed; check settings",
@@ -265,6 +298,28 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "backend_notifications": "后端队列完成通知",
         "backend_name": "后端显示名称",
         "backend_restart_required": "保存后端设置后请重启 ComfyUI",
+        "serverchan": "微信通知 · Server酱 Turbo",
+        "serverchan_sendkey": "SendKey（SCT…）",
+        "serverchan_key_placeholder": "输入新密钥；留空保留已保存的密钥",
+        "serverchan_replace": "更换密钥",
+        "serverchan_delete": "删除密钥",
+        "serverchan_delete_confirm": "点击“保存”时删除已保存的 SendKey？取消设置则保留原密钥。",
+        "serverchan_delete_pending": "将在保存时删除",
+        "serverchan_missing_key": "请先输入 Server酱 Turbo SendKey，再启用此通道",
+        "serverchan_note": (
+            "先在 Server酱官网绑定微信通道并获取自己的 SCT SendKey。"
+            "保存后密钥单独存储，不再回填此输入框。"
+            "macOS/Linux 使用仅当前用户可读的文件（非加密），Windows 使用用户绑定加密。"
+            "通知经 Server酱中转，有免费额度限制。"
+            "远程 ComfyUI 需在服务器上单独配置；测试不会保存密钥。"
+        ),
+        "serverchan_storage_error": "密钥存储不可用或不安全",
+        "serverchan_save_error": "无法安全保存，修改未应用；请检查设置及密钥文件权限。",
+        "serverchan_partial_save_error": (
+            "密钥保存失败，且未能恢复原设置；重启 ComfyUI 前请检查已保存配置。"
+        ),
+        "serverchan_get_key": "获取 SendKey",
+        "test_accepted": "请求已受理",
         "source_timeout": "连接超时，正在重连…",
         "source_refused": "连接被拒绝，正在重连…",
         "source_auth": "SSH 认证失败，请检查设置",
@@ -354,6 +409,33 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "backend_notifications": "バックエンドのキュー完了通知",
         "backend_name": "バックエンド表示名",
         "backend_restart_required": "保存後に ComfyUI を再起動してください",
+        "serverchan": "WeChat 通知 · ServerChan Turbo",
+        "serverchan_sendkey": "SendKey（SCT…）",
+        "serverchan_key_placeholder": "新しいキーを入力。空欄なら保存済みキーを維持",
+        "serverchan_replace": "キーを変更",
+        "serverchan_delete": "キーを削除",
+        "serverchan_delete_confirm": (
+            "保存時に SendKey を削除しますか？キャンセルすると元のキーを保持します。"
+        ),
+        "serverchan_delete_pending": "保存時に削除します",
+        "serverchan_missing_key": "有効にする前に ServerChan Turbo SendKey を入力してください",
+        "serverchan_note": (
+            "ServerChan で WeChat を連携し SCT SendKey を取得してください。"
+            "キーは別途保存され、画面に再表示されません。"
+            "macOS/Linux は所有者専用ファイル（暗号化なし）、"
+            "Windows はユーザー暗号化を使用します。第三者中継と無料枠制限があります。"
+            "リモートはホスト側で設定してください。テストはキーを保存しません。"
+        ),
+        "serverchan_storage_error": "キー保存先が使用できないか安全ではありません",
+        "serverchan_save_error": (
+            "安全に保存できませんでした。変更は適用されていません。"
+            "設定と権限を確認してください。"
+        ),
+        "serverchan_partial_save_error": (
+            "キー保存と設定の復元に失敗しました。再起動前に保存済み設定を確認してください。"
+        ),
+        "serverchan_get_key": "SendKey を取得",
+        "test_accepted": "リクエスト受付済み",
         "source_timeout": "接続がタイムアウトしました。再接続中…",
         "source_refused": "接続が拒否されました。再接続中…",
         "source_auth": "SSH 認証に失敗しました。設定を確認してください",
@@ -443,6 +525,33 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "backend_notifications": "백엔드 대기열 완료 알림",
         "backend_name": "백엔드 표시 이름",
         "backend_restart_required": "저장 후 ComfyUI를 다시 시작하세요",
+        "serverchan": "WeChat 알림 · ServerChan Turbo",
+        "serverchan_sendkey": "SendKey (SCT…)",
+        "serverchan_key_placeholder": "새 키 입력; 비워 두면 저장된 키 유지",
+        "serverchan_replace": "키 변경",
+        "serverchan_delete": "키 삭제",
+        "serverchan_delete_confirm": (
+            "저장을 누를 때 SendKey를 삭제할까요? 취소하면 기존 키가 유지됩니다."
+        ),
+        "serverchan_delete_pending": "저장 시 삭제됩니다",
+        "serverchan_missing_key": "활성화하기 전에 ServerChan Turbo SendKey를 입력하세요",
+        "serverchan_note": (
+            "ServerChan에서 WeChat을 연결하고 SCT SendKey를 받으세요. "
+            "키는 별도로 저장되며 입력란에 다시 표시되지 않습니다. "
+            "macOS/Linux는 소유자 전용 파일(암호화 안 됨), "
+            "Windows는 사용자 암호화를 사용합니다. 제3자 중계와 무료 한도가 적용됩니다. "
+            "원격 호스트는 별도 설정해야 합니다. 테스트는 키를 저장하지 않습니다."
+        ),
+        "serverchan_storage_error": "키 저장소를 사용할 수 없거나 안전하지 않습니다",
+        "serverchan_save_error": (
+            "안전하게 저장하지 못했습니다. 변경이 적용되지 않았습니다. "
+            "설정과 권한을 확인하세요."
+        ),
+        "serverchan_partial_save_error": (
+            "키 저장과 설정 복원에 실패했습니다. 재시작 전 저장된 설정을 확인하세요."
+        ),
+        "serverchan_get_key": "SendKey 받기",
+        "test_accepted": "요청 접수됨",
         "source_timeout": "연결 시간이 초과되었습니다. 다시 연결 중…",
         "source_refused": "연결이 거부되었습니다. 다시 연결 중…",
         "source_auth": "SSH 인증에 실패했습니다. 설정을 확인하세요",
@@ -458,6 +567,7 @@ if any(set(catalog) != set(REQUIRED_KEYS) for catalog in LANGUAGES.values()):
 RESULT_MESSAGES: dict[str, dict[str, str]] = {
     "en-US": {
         "sent": "Message sent",
+        "accepted": "ServerChan accepted the request; confirm receipt in WeChat",
         "played": "Audio played",
         "valid": "Audio file is valid",
         "disabled": "This feature is disabled",
@@ -481,6 +591,7 @@ RESULT_MESSAGES: dict[str, dict[str, str]] = {
     },
     "zh-CN": {
         "sent": "消息已发送",
+        "accepted": "Server酱已受理请求，请在微信确认实际收到",
         "played": "声音已播放",
         "valid": "音频文件有效",
         "disabled": "此功能已禁用",
@@ -504,6 +615,7 @@ RESULT_MESSAGES: dict[str, dict[str, str]] = {
     },
     "ja-JP": {
         "sent": "メッセージを送信しました",
+        "accepted": "ServerChan が受け付けました。WeChat で受信を確認してください",
         "played": "音声を再生しました",
         "valid": "音声ファイルは有効です",
         "disabled": "この機能は無効です",
@@ -527,6 +639,7 @@ RESULT_MESSAGES: dict[str, dict[str, str]] = {
     },
     "ko-KR": {
         "sent": "메시지를 보냈습니다",
+        "accepted": "ServerChan이 요청을 접수했습니다. WeChat 수신을 확인하세요",
         "played": "소리를 재생했습니다",
         "valid": "오디오 파일이 유효합니다",
         "disabled": "이 기능은 비활성화되어 있습니다",

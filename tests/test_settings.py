@@ -11,6 +11,7 @@ from comfyui_progress_bridge.desktop.settings import (
     EndpointConfig,
     NotificationConfig,
     QQNotificationConfig,
+    ServerChanNotificationConfig,
     SettingsStore,
     TelegramNotificationConfig,
     WeixinNotificationConfig,
@@ -93,7 +94,38 @@ def test_default_notification_paths_are_project_owned_not_gateway_owned(tmp_path
         tmp_path / "backend-notification-credentials.env"
     )
     assert settings.backend_notifications.weixin.context_store == str(tmp_path / "weixin")
+    assert settings.backend_notifications.serverchan.key_file == str(
+        tmp_path / "secrets" / "serverchan.key"
+    )
     assert ".hermes" not in repr(settings)
+
+
+def test_serverchan_additive_schema_round_trip_and_legacy_defaults(tmp_path):
+    path = tmp_path / "settings.json"
+    serverchan = ServerChanNotificationConfig(True, "/private/secrets/serverchan.key")
+    settings = AppSettings(
+        notifications=NotificationConfig(serverchan=serverchan),
+        backend_notifications=BackendNotificationSettings(
+            enabled=True,
+            credentials_file="",
+            serverchan=serverchan,
+        ),
+    )
+    SettingsStore(path).save(settings)
+    assert SettingsStore(path).load() == settings
+    assert "SendKey" not in path.read_text()
+    raw = json.loads(path.read_text())
+    del raw["notifications"]["serverchan"]
+    raw["backend_notifications"] = {"enabled": False}
+    legacy = AppSettings.from_dict(raw)
+    assert not legacy.notifications.serverchan.enabled
+    assert not legacy.backend_notifications.serverchan.enabled
+
+
+@pytest.mark.parametrize("kwargs", [{"enabled": "true"}, {"key_file": ""}, {"key_file": None}])
+def test_serverchan_settings_reject_invalid_types(kwargs):
+    with pytest.raises(ValueError):
+        ServerChanNotificationConfig(**kwargs)
 
 
 def test_custom_settings_path_preserves_existing_parent_permissions(tmp_path):

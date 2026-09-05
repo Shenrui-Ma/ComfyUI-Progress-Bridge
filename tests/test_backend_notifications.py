@@ -18,6 +18,7 @@ from comfyui_progress_bridge.bridge import install_bridge
 from comfyui_progress_bridge.desktop.settings import (
     AppSettings,
     BackendNotificationSettings,
+    ServerChanNotificationConfig,
     SettingsStore,
     TelegramNotificationConfig,
 )
@@ -74,6 +75,105 @@ def test_backend_config_is_explicit_opt_in_and_builds_sender_settings(tmp_path):
     assert loaded.settings.notifications.env_file == str(tmp_path / "credentials.env")
     assert loaded.settings.notifications.telegram.chat_id == "-10042"
     assert loaded.settings.notifications.qq.enabled is False
+
+
+def test_serverchan_only_standalone_backend_needs_no_legacy_credentials(tmp_path):
+    path = tmp_path / "backend.json"
+    path.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "serverchan": {"enabled": True, "key_file": "secrets/serverchan.key"},
+            }
+        )
+    )
+    path.chmod(0o600)
+    loaded = load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+    assert loaded is not None
+    assert loaded.settings.notifications.serverchan == ServerChanNotificationConfig(
+        True, str(tmp_path / "secrets" / "serverchan.key")
+    )
+    assert not loaded.settings.notifications.telegram.enabled
+    assert not loaded.settings.notifications.weixin.enabled
+
+
+def test_serverchan_only_ui_managed_backend_needs_no_legacy_credentials(tmp_path):
+    path = tmp_path / "settings.json"
+    SettingsStore(path).save(
+        AppSettings(
+            backend_notifications=BackendNotificationSettings(
+                enabled=True,
+                credentials_file="",
+                serverchan=ServerChanNotificationConfig(True, "secrets/serverchan.key"),
+            )
+        )
+    )
+    loaded = load_backend_notification_config({}, default_path=path)
+    assert loaded is not None
+    assert loaded.settings.notifications.serverchan.key_file == str(
+        tmp_path / "secrets" / "serverchan.key"
+    )
+
+
+def test_windows_serverchan_settings_accept_windows_writable_mode(tmp_path, monkeypatch):
+    import comfyui_progress_bridge.backend_notifications as backend
+
+    path = tmp_path / "settings.json"
+    SettingsStore(path).save(AppSettings(backend_notifications=BackendNotificationSettings(
+        enabled=True, credentials_file="",
+        serverchan=ServerChanNotificationConfig(True, "secrets/serverchan.key"),
+    )))
+    path.chmod(0o666)
+    monkeypatch.setattr(backend, "os", types.SimpleNamespace(**(vars(os) | {"name": "nt"})))
+    loaded = load_backend_notification_config({}, default_path=path)
+    assert loaded is not None
+    assert loaded.settings.notifications.serverchan.enabled
+    assert loaded.settings.notifications.serverchan.key_file == str(
+        tmp_path / "secrets" / "serverchan.key"
+    )
+    # The public-settings exception must never apply implicitly to secret files.
+    with pytest.raises(ValueError, match="private regular file"):
+        _private_file(path, 1_048_576)
+
+
+def test_windows_public_settings_do_not_relax_legacy_plaintext_credentials(tmp_path, monkeypatch):
+    import comfyui_progress_bridge.backend_notifications as backend
+
+    path = write_config(tmp_path)
+    path.chmod(0o666)
+    (tmp_path / "credentials.env").chmod(0o666)
+    monkeypatch.setattr(backend, "os", types.SimpleNamespace(**(vars(os) | {"name": "nt"})))
+    with pytest.raises(ValueError, match="private regular file"):
+        load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+
+
+@pytest.mark.parametrize("during_open", [False, True])
+def test_windows_public_settings_reject_reparse_points(tmp_path, monkeypatch, during_open):
+    import comfyui_progress_bridge.backend_notifications as backend
+
+    path = tmp_path / "settings.json"
+    path.write_text('{"enabled": false}')
+    path.chmod(0o666)
+    metadata = path.stat()
+    reparse_metadata = types.SimpleNamespace(**(
+        {name: getattr(metadata, name) for name in dir(metadata) if name.startswith("st_")}
+        | {"st_file_attributes": 0x400}
+    ))
+    fake_os = types.SimpleNamespace(**(vars(os) | {"name": "nt"}))
+    if during_open:
+        fake_os.fstat = lambda descriptor: reparse_metadata
+    else:
+        monkeypatch.setattr(type(path), "lstat", lambda self: reparse_metadata)
+    monkeypatch.setattr(backend, "os", fake_os)
+    with pytest.raises(ValueError, match="private regular file"):
+        load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+
+
+def test_standalone_backend_never_accepts_inline_sendkey(tmp_path):
+    path = write_config(tmp_path, serverchan={"enabled": True, "sendkey": "SCTSecret"})
+    with pytest.raises(ValueError, match="unknown serverchan setting") as raised:
+        load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+    assert "SCTSecret" not in str(raised.value)
 
 
 def test_backend_config_can_load_explicit_ui_managed_settings_file(tmp_path):
@@ -206,9 +306,7 @@ def test_backend_requires_exact_private_file_mode(tmp_path, mode, target):
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO support")
-def test_backend_rejects_fifo_swapped_between_stat_and_open_without_blocking(
-    tmp_path, monkeypatch
-):
+def test_backend_rejects_fifo_swapped_between_stat_and_open_without_blocking(tmp_path, monkeypatch):
     path = write_config(tmp_path)
     original_open = os.open
     swapped = False
@@ -598,9 +696,7 @@ def test_incomplete_weixin_does_not_block_healthy_telegram(monkeypatch, tmp_path
     path = write_config(tmp_path, weixin={"enabled": True})
     config = load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
     sender = NotificationSender(transport=object(), credential_environ={})
-    monkeypatch.setattr(
-        sender, "_telegram", lambda *args: SafeResult(True, "sent", "", "telegram")
-    )
+    monkeypatch.setattr(sender, "_telegram", lambda *args: SafeResult(True, "sent", "", "telegram"))
     results = sender.send_enabled("done", config.settings)
     assert results[0].ok
     assert results[1].platform == "weixin"

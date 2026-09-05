@@ -67,6 +67,7 @@ class SafeResult:
 RESULT_CODES = frozenset(
     {
         "sent",
+        "accepted",
         "played",
         "valid",
         "disabled",
@@ -201,7 +202,13 @@ class FixedOriginHttpsTransport:
     """HTTPS-only, no-redirect transport with one total monotonic deadline."""
 
     OFFICIAL_HOSTS = frozenset(
-        {"api.telegram.org", "ilinkai.weixin.qq.com", "bots.qq.com", "api.sgroup.qq.com"}
+        {
+            "api.telegram.org",
+            "ilinkai.weixin.qq.com",
+            "bots.qq.com",
+            "api.sgroup.qq.com",
+            "sctapi.ftqq.com",
+        }
     )
 
     def __init__(
@@ -637,9 +644,12 @@ class NotificationSender:
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
         credential_environ: dict[str, str] | None = None,
+        serverchan_sendkey: str | None = None,
     ) -> None:
         self.clock = clock
         self.sleeper = sleeper
+        # Explicit, transient UI test input only; never serialize or display it.
+        self._serverchan_sendkey = serverchan_sendkey
         # None preserves desktop environment precedence; backend callers pass {}.
         self.credential_environ = (
             None if credential_environ is None else dict(credential_environ)
@@ -664,8 +674,10 @@ class NotificationSender:
             return _safe_failure(platform, "disabled", "Notifications are disabled")
         config = settings.notifications
         try:
-            credentials = load_credentials(config.env_file, environ=self.credential_environ)
             deadline = self.monotonic() + float(config.timeout)
+            if platform == "serverchan":
+                return self._serverchan(text, config, deadline)
+            credentials = load_credentials(config.env_file, environ=self.credential_environ)
             if platform == "telegram":
                 return self._telegram(text, config, credentials, deadline)
             if platform == "weixin":
@@ -679,10 +691,8 @@ class NotificationSender:
             if isinstance(exc.reason, TimeoutError):
                 return _safe_failure(platform, "timeout", "Network request timed out")
             return _safe_failure(platform, "network_error", "Network request failed")
-        except Exception as exc:  # transport implementations are dependency-injected
-            return _safe_failure(
-                platform, "network_error", f"Network request failed ({type(exc).__name__})"
-            )
+        except Exception:  # transport exceptions can include credential-bearing URLs
+            return _safe_failure(platform, "network_error", "Network request failed")
 
     def _remaining(self, deadline: float) -> float:
         remaining = deadline - self.monotonic()
@@ -730,6 +740,7 @@ class NotificationSender:
                 ("telegram", config.telegram.enabled),
                 ("weixin", config.weixin.enabled),
                 ("qq", config.qq.enabled),
+                ("serverchan", config.serverchan.enabled),
             )
             if value
         ]
@@ -741,6 +752,40 @@ class NotificationSender:
                 # A failed adapter must not suppress delivery on another platform.
                 results.append(_safe_failure(name, "network_error", "Notification failed"))
         return tuple(results)
+
+    def _serverchan(self, text: str, config: NotificationConfig, deadline: float) -> SafeResult:
+        from .secret_store import SendKeyStore, validate_sendkey
+
+        platform = "serverchan"
+        if not config.serverchan.enabled:
+            return _safe_failure(platform, "disabled")
+        try:
+            key = self._serverchan_sendkey
+            if key is None:
+                key = SendKeyStore(Path(config.serverchan.key_file)).load()
+            if not key:
+                return _safe_failure(platform, "missing_credentials", "SendKey is not configured")
+            key = validate_sendkey(key)
+        except (ValueError, OSError):
+            return _safe_failure(
+                platform, "invalid_settings", "SendKey storage or format is invalid"
+            )
+        response = self._request(
+            "POST",
+            f"https://sctapi.ftqq.com/{key}.send",
+            headers={"Content-Type": "application/json"},
+            json_body={
+                "title": " ".join(text[:4096].split())[:32] or "ComfyUI",
+                "desp": text[:4096],
+            },
+            deadline=deadline,
+            max_response_bytes=MAX_RESPONSE_BYTES,
+        )
+        data = _json_response(response)
+        # A successful API response confirms acceptance, not delivery to WeChat.
+        if data is None or type(data.get("code")) is not int or data["code"] != 0:
+            return _safe_failure(platform, "api_error", "ServerChan rejected the request")
+        return SafeResult(True, "accepted", "ServerChan accepted the notification", platform)
 
     def _telegram(
         self,

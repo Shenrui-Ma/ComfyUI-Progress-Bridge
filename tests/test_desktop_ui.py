@@ -947,8 +947,9 @@ def test_language_save_keeps_force_shown_dock_visible(app, tmp_path, monkeypatch
     runtime = desktop_app.runtime_settings(persisted, show=True)
     dialog_bases = []
 
-    class LanguageOnlyDialog:
+    class LanguageOnlyDialog(SettingsDialog):
         def __init__(self, settings, parent):
+            super().__init__(settings, parent)
             self.settings = settings
             dialog_bases.append(settings)
 
@@ -1010,8 +1011,9 @@ def test_dialog_uses_persisted_base_with_effective_visibility_and_applies_delibe
     )
     seen = []
 
-    class AcceptedDialog:
+    class AcceptedDialog(SettingsDialog):
         def __init__(self, settings, parent):
+            super().__init__(settings, parent)
             seen.append(settings)
 
         def exec(self):

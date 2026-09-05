@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/472f08ee-8b8a-4940-bd9a-57a8b3718680
 | 进度模型 | 运行中与等待中的任务、友好节点/阶段解析、权威队列快照、客户端路由的执行事件 |
 | 语言 | 简体中文、英语、日语、韩语 |
 | 桌面提醒 | Telegram、微信、QQ、完成提示音、各平台独立测试动作 |
-| 后端提醒 | Telegram 与微信独立启用和测试，由 ComfyUI 进程在忙碌队列变空时触发 |
+| 后端提醒 | Telegram、微信/iLink 直连与 Server酱 Turbo 独立启用和测试，由 ComfyUI 后端在忙碌队列变空时触发 |
 | 音频 | 关闭、内置提示音或经过校验的自定义 WAV |
 | 远程监控 | 带有界重连/关闭行为的 SSH 探针；无需远程常驻 Agent 服务 |
 | 打包发布 | 标准 ComfyUI 自定义节点布局、PEP 621 wheel/sdist、浏览器资源、CLI 入口、GitHub Actions 矩阵 |
@@ -94,6 +94,10 @@ comfyui-progress-desktop --demo --show
 ```
 
 ## 后端队列完成通知
+
+微信新用户可使用 **Server酱 Turbo**：在原生悬浮窗 **设置 → 后端队列完成通知 →
+微信通知 · Server酱 Turbo** 中填写自己的 SendKey。保存后不再显示，支持明确更换和删除。
+这是可选的第三方中转通道，与原有 iLink 直连独立。详见[首次绑定及存储安全说明](docs/serverchan-setup.md)。
 
 后端通知属于本插件自身，不需要 Agent 框架、LLM、桌面窗口、浏览器标签页或通知工作流节点。
 
@@ -300,7 +304,7 @@ Token 保存在单独的固定键 `KEY=value` 文件中，解析器永远不会 
 
 | 指标 | 强制值 / 行为 |
 | --- | --- |
-| 自动化回归测试 | 截至 2026-09-05 共 **453 项测试** |
+| 自动化回归测试 | 截至 2026-09-05 共 **532 项测试**；DPAPI 专项需 Windows 环境 |
 | CI Python 矩阵 | Python **3.10、3.11、3.12、3.13** |
 | UDP 数据报上限 | **8192 bytes** |
 | Prompt ID 上限 | **256 字符** |

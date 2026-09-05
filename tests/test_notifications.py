@@ -11,6 +11,7 @@ from comfyui_progress_bridge.desktop.notifications import (
     MAX_RESPONSE_BYTES,
     RESULT_CODES,
     CompletionDispatcher,
+    FixedOriginHttpsTransport,
     HttpResponse,
     NotificationSender,
     SafeResult,
@@ -22,6 +23,7 @@ from comfyui_progress_bridge.desktop.settings import (
     EndpointConfig,
     NotificationConfig,
     QQNotificationConfig,
+    ServerChanNotificationConfig,
     TelegramNotificationConfig,
     WeixinNotificationConfig,
 )
@@ -86,6 +88,152 @@ def settings_for(tmp_path, *, telegram=None, weixin=None, qq=None, timeout=10):
         qq=qq or QQNotificationConfig(),
     )
     return AppSettings(notifications=config)
+
+
+def serverchan_settings(tmp_path, *, enabled=True):
+    return AppSettings(
+        notifications=NotificationConfig(
+            enabled=True,
+            env_file=str(tmp_path / "nonexistent.env"),
+            timeout=3,
+            serverchan=ServerChanNotificationConfig(enabled, str(tmp_path / "secrets" / "key")),
+        )
+    )
+
+
+def test_serverchan_uses_private_key_and_reports_acceptance_only(tmp_path, monkeypatch):
+    from comfyui_progress_bridge.desktop.secret_store import SendKeyStore
+
+    settings = serverchan_settings(tmp_path)
+    key = "SCT123TestOnlySecret"
+    SendKeyStore(settings.notifications.serverchan.key_file).save(key)
+    monkeypatch.setenv("SERVERCHAN_SENDKEY", "SCTWrongEnvironmentKey")
+    transport = FakeTransport([response({"code": 0, "data": {"pushid": "opaque"}})])
+    sender = NotificationSender(transport)
+
+    result = sender.send_enabled("Queue completed", settings)
+
+    assert result == (
+        SafeResult(True, "accepted", "ServerChan accepted the notification", "serverchan"),
+    )
+    method, url, call = transport.calls[0]
+    assert method == "POST"
+    assert url == f"https://sctapi.ftqq.com/{key}.send"
+    assert call["headers"] == {"Content-Type": "application/json"}
+    assert call["json_body"] == {"title": "Queue completed", "desp": "Queue completed"}
+    assert 0 < call["timeout"] <= 3
+    assert call["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert key not in repr(result) + repr(sender) + repr(settings)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        response({"code": 1, "message": "SCTPrivateSecret"}),
+        response({"code": False}),
+        response({"code": "0"}),
+        response({}),
+        response({"code": 0}, status=500),
+        HttpResponse(200, b"not-json"),
+        HttpResponse(200, b"x" * (MAX_RESPONSE_BYTES + 1)),
+    ],
+)
+def test_serverchan_rejects_ambiguous_responses_without_echoing_secrets(tmp_path, reply):
+    transport = FakeTransport([reply])
+    result = NotificationSender(transport, serverchan_sendkey="SCTPrivateSecret").send_platform(
+        "serverchan", "done", serverchan_settings(tmp_path)
+    )
+    assert result.code == "api_error"
+    assert not result.ok
+    assert "SCTPrivateSecret" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    "error,code",
+    [
+        (RuntimeError("https://sctapi.ftqq.com/SCTPrivateSecret.send"), "network_error"),
+        (TimeoutError("SCTPrivateSecret"), "timeout"),
+    ],
+)
+def test_serverchan_transport_errors_are_fixed_safe_results(tmp_path, error, code):
+    result = NotificationSender(
+        FakeTransport([error]), serverchan_sendkey="SCTPrivateSecret"
+    ).send_platform("serverchan", "done", serverchan_settings(tmp_path))
+    assert result.code == code
+    assert "SCTPrivateSecret" not in repr(result)
+    assert "https" not in repr(result)
+
+
+def test_serverchan_never_reads_env_credentials_and_override_does_not_persist(
+    tmp_path, monkeypatch
+):
+    settings = serverchan_settings(tmp_path)
+    monkeypatch.setenv("SERVERCHAN_SENDKEY", "SCTEnvironmentSecret")
+    monkeypatch.setattr(
+        "comfyui_progress_bridge.desktop.notifications.load_credentials",
+        lambda *args, **kwargs: pytest.fail("ServerChan must not read legacy credentials"),
+    )
+    transport = FakeTransport([response({"code": 0})])
+    assert (
+        NotificationSender(transport).send_platform("serverchan", "done", settings).code
+        == "missing_credentials"
+    )
+    assert not transport.calls
+    sender = NotificationSender(transport, serverchan_sendkey="SCTExplicitTestSecret")
+    assert sender.send_platform("serverchan", "done", settings).code == "accepted"
+    assert not (tmp_path / "secrets" / "key").exists()
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["", "../SCTSecret", "https://sctapi.ftqq.com/SCTSecret", "SCTSecret\n", "SCTx?other=secret"],
+)
+def test_serverchan_invalid_override_never_reaches_transport(tmp_path, key):
+    transport = FakeTransport()
+    result = NotificationSender(transport, serverchan_sendkey=key).send_platform(
+        "serverchan", "done", serverchan_settings(tmp_path)
+    )
+    assert not result.ok
+    assert not transport.calls
+
+
+def test_serverchan_platform_failure_does_not_skip_delivery(tmp_path):
+    settings = serverchan_settings(tmp_path)
+    settings = replace(
+        settings,
+        notifications=replace(
+            settings.notifications, telegram=TelegramNotificationConfig(True, "chat")
+        ),
+    )
+    sender = NotificationSender(
+        FakeTransport([response({"code": 0})]), serverchan_sendkey="SCTTestSecret"
+    )
+    results = sender.send_enabled("done", settings)
+    assert results[0].platform == "telegram" and results[0].code == "missing_credentials"
+    assert results[1].platform == "serverchan" and results[1].code == "accepted"
+
+
+def test_serverchan_transport_allowlist_is_exact_and_https_only():
+    resolved = []
+
+    def resolver(host, port, timeout):
+        resolved.append((host, port))
+        raise RuntimeError("test resolver stopped before networking")
+
+    transport = FixedOriginHttpsTransport(resolver=resolver, proxy_url="")
+    kwargs = dict(headers={}, json_body={}, timeout=1, max_response_bytes=1024)
+    with pytest.raises(RuntimeError, match="test resolver"):
+        transport.request("POST", "https://sctapi.ftqq.com/SCTTest.send", **kwargs)
+    assert resolved == [("sctapi.ftqq.com", 443)]
+    for url in (
+        "http://sctapi.ftqq.com/SCTTest.send",
+        "https://sctapi.ftqq.com.evil.example/SCTTest.send",
+        "https://sctapi.ftqq.com:444/SCTTest.send",
+        "https://sctapi.ftqq.com@evil.example/SCTTest.send",
+    ):
+        with pytest.raises(ValueError, match="origin"):
+            transport.request("POST", url, **kwargs)
+    assert len(resolved) == 1
 
 
 def test_telegram_uses_official_sendmessage_json_and_bounded_transport(tmp_path):
@@ -766,6 +914,7 @@ def test_dispatcher_prunes_dedupe_state_only_when_endpoint_is_removed_from_setti
 def test_public_result_codes_cover_all_adapter_outcomes():
     assert RESULT_CODES == {
         "sent",
+        "accepted",
         "played",
         "valid",
         "disabled",

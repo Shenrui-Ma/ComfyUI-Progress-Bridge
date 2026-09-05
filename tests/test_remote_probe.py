@@ -302,7 +302,9 @@ def test_unexpected_oversized_record_becomes_explicit_bounded_status():
     assert _valid_record(json.loads(line))
 
 
-def test_all_probe_emitted_record_kinds_validate_as_source_protocol():
+def test_all_probe_emitted_record_kinds_validate_as_source_protocol(monkeypatch):
+    # This checks record shapes, not the public UDP port; coexist with a running dock.
+    monkeypatch.setattr("comfyui_progress_bridge.monitor.remote_probe.DEFAULT_UDP_PORT", 0)
     output = StringIO()
     probe = RemoteProbe(
         [ProbeEndpoint("127.0.0.1", 9189)], output=output, http_get=empty_queue
@@ -320,6 +322,7 @@ def test_all_probe_emitted_record_kinds_validate_as_source_protocol():
         "status",
     }
     assert all(_valid_record(record) for record in records)
+    probe.close()
 
 
 def test_http_reader_is_byte_bounded():

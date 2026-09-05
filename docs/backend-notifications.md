@@ -7,6 +7,13 @@ administrator selects a standalone local config file.
 
 ## Local desktop binding
 
+For the simpler **ServerChan Turbo** WeChat channel, use the dedicated SendKey field in
+the backend section; no legacy credential `.env` file is needed. Keys are stored separately
+and never prefilled when Settings is reopened. See [ServerChan setup](serverchan-setup.md)
+for first-time binding, safe replacement/deletion, storage limitations and remote-host setup.
+
+The steps below configure the existing direct Telegram/iLink channels.
+
 1. Create a dedicated owner-private credential file. It is inert `KEY=value` data and is never
    evaluated as shell code:
 

@@ -17,6 +17,7 @@ from .desktop.settings import (
     BackendNotificationSettings,
     NotificationConfig,
     QQNotificationConfig,
+    ServerChanNotificationConfig,
     TelegramNotificationConfig,
     WeixinNotificationConfig,
     config_directory,
@@ -40,17 +41,32 @@ class BackendNotificationConfig:
     settings: AppSettings
 
 
-def _private_file(path: Path, max_bytes: int) -> bytes:
-    """Read a bounded owner-private regular file without following symlinks."""
-    try:
-        metadata = path.lstat()
-        if (
+def _private_file(path: Path, max_bytes: int, *, non_secret_settings: bool = False) -> bytes:
+    """Read a bounded regular file, retaining strict permissions for plaintext secrets.
+
+    Windows chmod bits do not express ACL privacy. Non-secret settings use the
+    user's normal AppData ACL there; ServerChan secrets are handled separately by
+    SendKeyStore's user-bound DPAPI. Legacy plaintext credential files do not opt
+    into this exception and retain the existing fail-closed policy.
+    """
+    require_private_mode = not (non_secret_settings and os.name == "nt")
+
+    def unsafe(metadata: os.stat_result) -> bool:
+        return (
             stat.S_ISLNK(metadata.st_mode)
+            or bool(
+                getattr(metadata, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
             or not stat.S_ISREG(metadata.st_mode)
-            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or (require_private_mode and stat.S_IMODE(metadata.st_mode) != 0o600)
             or metadata.st_size > max_bytes
             or (hasattr(os, "getuid") and metadata.st_uid != os.getuid())
-        ):
+        )
+
+    try:
+        metadata = path.lstat()
+        if unsafe(metadata):
             raise ValueError("backend config must be a private regular file")
         flags = (
             os.O_RDONLY
@@ -61,12 +77,8 @@ def _private_file(path: Path, max_bytes: int) -> bytes:
         descriptor = os.open(path, flags)
         try:
             opened = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or stat.S_IMODE(opened.st_mode) != 0o600
-                or opened.st_size > max_bytes
-                or (hasattr(os, "getuid") and opened.st_uid != os.getuid())
-                or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+            if unsafe(opened) or (opened.st_dev, opened.st_ino) != (
+                metadata.st_dev, metadata.st_ino
             ):
                 raise ValueError("backend config must be a private regular file")
             chunks: list[bytes] = []
@@ -90,7 +102,7 @@ def _private_file(path: Path, max_bytes: int) -> bytes:
 
 
 def _private_json(path: Path) -> dict[str, Any]:
-    data = _private_file(path, MAX_BACKEND_CONFIG_BYTES)
+    data = _private_file(path, MAX_BACKEND_CONFIG_BYTES, non_secret_settings=True)
     if len(data) > MAX_BACKEND_CONFIG_BYTES:
         raise ValueError("backend config is too large")
     try:
@@ -155,6 +167,7 @@ def load_backend_notification_config(
             "timeout",
             "telegram",
             "weixin",
+            "serverchan",
         },
         "backend",
     )
@@ -176,12 +189,15 @@ def load_backend_notification_config(
     )
     weixin = _object(config.get("weixin"), "weixin")
     _only(weixin, {"enabled", "account_id", "target", "context_store"}, "weixin")
+    serverchan = _object(config.get("serverchan"), "serverchan")
+    _only(serverchan, {"enabled", "key_file"}, "serverchan")
     backend = BackendNotificationSettings(
         enabled=True,
         name=name.strip(),
         credentials_file=config.get("credentials_file", ""),
         timeout=config.get("timeout", 10.0),
         telegram=telegram_config,
+        serverchan=ServerChanNotificationConfig(**serverchan),
         weixin=WeixinNotificationConfig(
             enabled=weixin.get("enabled", False),
             account_id=weixin.get("account_id", ""),
@@ -200,7 +216,11 @@ def _backend_config_from_settings(
     credential_path = Path(backend.credentials_file).expanduser()
     if not credential_path.is_absolute():
         credential_path = source_path.parent / credential_path
-    _private_file(credential_path, MAX_BACKEND_CREDENTIAL_BYTES)
+    if backend.telegram.enabled or backend.weixin.enabled:
+        _private_file(credential_path, MAX_BACKEND_CREDENTIAL_BYTES)
+    key_path = Path(backend.serverchan.key_file).expanduser()
+    if not key_path.is_absolute():
+        key_path = source_path.parent / key_path
     context_store = backend.weixin.context_store
     if context_store and not Path(context_store).expanduser().is_absolute():
         context_store = str(source_path.parent / context_store)
@@ -209,6 +229,7 @@ def _backend_config_from_settings(
         env_file=str(credential_path),
         timeout=backend.timeout,
         telegram=backend.telegram,
+        serverchan=ServerChanNotificationConfig(backend.serverchan.enabled, str(key_path)),
         weixin=WeixinNotificationConfig(
             enabled=backend.weixin.enabled,
             account_id=backend.weixin.account_id,
