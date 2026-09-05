@@ -1,8 +1,10 @@
+<p align="center">
+  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
+</p>
+
 # ComfyUI Progress Bridge
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
-
-<img align="right" src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
 
 [![CI](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10–3.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
@@ -16,13 +18,6 @@ execution queue finishes.
 
 The extension intentionally adds **no visible workflow nodes**. It monitors ComfyUI without changing
 workflow JSON, queue controls, prompts, models, or generated media.
-
-<br clear="right">
-
-<p align="center">
-  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
-</p>
-<p align="center"><sub>Multi-endpoint progress monitoring and desktop settings. Click the image for full size.</sub></p>
 
 ## Demo video
 
@@ -417,6 +412,10 @@ This project deliberately does not add:
 The repository follows the standard ComfyUI custom-node layout and includes PEP 621 metadata.
 Registry publisher metadata will be added after the project owner creates the corresponding Comfy
 Registry Publisher ID.
+
+<p align="center">
+  <img src="docs/images/silver-wolf-sticker.png" width="220" alt="Silver Wolf cyber-hacker chibi sticker">
+</p>
 
 ## License
 

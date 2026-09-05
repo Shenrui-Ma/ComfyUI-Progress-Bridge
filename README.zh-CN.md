@@ -1,8 +1,10 @@
+<p align="center">
+  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
+</p>
+
 # ComfyUI Progress Bridge
 
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
-
-<img align="right" src="docs/images/silver-wolf-sticker.png" width="220" alt="银狼赛博黑客 Q 版贴纸">
 
 [![CI](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Shenrui-Ma/ComfyUI-Progress-Bridge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10–3.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
@@ -15,13 +17,6 @@
 
 本扩展有意保持 **零可见工作流节点**。它不会修改工作流 JSON、队列控制、提示词、模型
 或生成媒体。
-
-<br clear="right">
-
-<p align="center">
-  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
-</p>
-<p align="center"><sub>多端点进度监控与桌面设置，点击图片查看原图。</sub></p>
 
 ## 演示视频
 
@@ -400,6 +395,10 @@ CI 会在每次 push 和 pull request 时，针对全部受支持 Python 版本�
 
 仓库遵循标准 ComfyUI 自定义节点布局，并包含 PEP 621 元数据。项目所有者创建对应的
 Comfy Registry Publisher ID 后，再补充 Registry publisher 元数据。
+
+<p align="center">
+  <img src="docs/images/silver-wolf-sticker.png" width="220" alt="银狼赛博黑客 Q 版贴纸">
+</p>
 
 ## 许可证
 
