@@ -47,24 +47,37 @@ def _private_file(path: Path, max_bytes: int) -> bytes:
         if (
             stat.S_ISLNK(metadata.st_mode)
             or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_mode & 0o077
+            or stat.S_IMODE(metadata.st_mode) != 0o600
             or metadata.st_size > max_bytes
             or (hasattr(os, "getuid") and metadata.st_uid != os.getuid())
         ):
             raise ValueError("backend config must be a private regular file")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
         descriptor = os.open(path, flags)
         try:
             opened = os.fstat(descriptor)
             if (
                 not stat.S_ISREG(opened.st_mode)
-                or opened.st_mode & 0o077
+                or stat.S_IMODE(opened.st_mode) != 0o600
                 or opened.st_size > max_bytes
                 or (hasattr(os, "getuid") and opened.st_uid != os.getuid())
                 or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
             ):
                 raise ValueError("backend config must be a private regular file")
-            data = os.read(descriptor, max_bytes + 1)
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(descriptor, min(65_536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
         finally:
             os.close(descriptor)
     except ValueError:
@@ -184,8 +197,6 @@ def _backend_config_from_settings(
     language: str,
     source_path: Path,
 ) -> BackendNotificationConfig:
-    from .desktop.notifications import NotificationSender, load_credentials
-
     credential_path = Path(backend.credentials_file).expanduser()
     if not credential_path.is_absolute():
         credential_path = source_path.parent / credential_path
@@ -206,21 +217,8 @@ def _backend_config_from_settings(
         ),
         qq=QQNotificationConfig(),
     )
-    credentials = load_credentials(str(credential_path), environ={})
-    if backend.telegram.enabled:
-        if not credentials.get("TELEGRAM_BOT_TOKEN"):
-            raise ValueError("Telegram backend credentials are missing")
-        if not backend.telegram.chat_id.strip():
-            raise ValueError("Telegram backend target is missing")
-    if backend.weixin.enabled:
-        account = backend.weixin.account_id.strip() or credentials.get("WEIXIN_ACCOUNT_ID", "")
-        target = backend.weixin.target.strip() or credentials.get("WEIXIN_HOME_CHANNEL", "")
-        if not credentials.get("WEIXIN_TOKEN") or not account:
-            raise ValueError("Weixin backend credentials are missing")
-        if not target:
-            raise ValueError("Weixin backend target is missing")
-        if not NotificationSender._context_token(notifications, account, target):
-            raise ValueError("Weixin backend context is missing or unsafe")
+    # Each platform validates its credentials, target and private context when sending.
+    # An incomplete platform must not disable the other one or prevent later recovery.
     settings = AppSettings(language=language, notifications=notifications)
     return BackendNotificationConfig(backend.name, settings)
 
@@ -324,7 +322,7 @@ def install_backend_notifications(
         if sender is None:
             from .desktop.notifications import NotificationSender
 
-            sender = NotificationSender()
+            sender = NotificationSender(credential_environ={})
         notifier = QueueDrainedNotifier(sender, config.settings, config.name)
 
         @wraps(current)

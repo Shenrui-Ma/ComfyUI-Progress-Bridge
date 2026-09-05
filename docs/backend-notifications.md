@@ -77,6 +77,12 @@ the service definition or launch script that starts that specific ComfyUI instan
 Supported languages are `en-US`, `zh-CN`, `ja-JP`, and `ko-KR`. At least one of Telegram or Weixin
 must be enabled. Backend mode intentionally does not enable QQ.
 
+The backend reads credentials exclusively from its configured private file; process-level
+Telegram/Weixin environment variables cannot silently override that file. Missing platform
+credentials, targets or context tokens fail that platform's send without disabling the other
+platform. Shared JSON/schema and credential-file permission errors still disable backend setup.
+`enabled` in the startup log means the observer is installed, not that delivery was confirmed.
+
 ## Queue semantics and safety
 
 The backend wrapper observes the `status` payloads already emitted through

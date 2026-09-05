@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..monitor.models import (
+    EndpointId,
     MonitorState,
     Reduction,
     TaskKey,
@@ -272,7 +273,7 @@ class EndpointCard(QFrame):
             if key.endpoint.host == config.host and key.endpoint.port == config.port
         ]
 
-    def update_state(self, state: MonitorState) -> None:
+    def update_state(self, state: MonitorState, *, received_at: datetime | None = None) -> None:
         endpoint_state = next(
             (
                 value
@@ -317,7 +318,8 @@ class EndpointCard(QFrame):
                 self.progress_bar.setValue(0)
                 self.progress_label.setText(self.translator(active.status))
         self.timestamp_label.setText(
-            f"{self.translator('updated')}: {datetime.now().astimezone().strftime('%H:%M:%S')}"
+            f"{self.translator('updated')}: "
+            + (received_at.strftime('%H:%M:%S') if received_at is not None else "—")
         )
 
 
@@ -697,7 +699,7 @@ class SettingsDialog(QDialog):
             if sender is None:
                 from .notifications import NotificationSender
 
-                sender = NotificationSender()
+                sender = NotificationSender(credential_environ={} if backend else None)
             text = self.t("test_notification")
             return sender.send_platform(platform, text, candidate)
 
@@ -875,6 +877,7 @@ class ProgressWindow(QWidget):
         # successful task transition advances it during this process lifetime.
         self.avatar_index = 0
         self._handled_completions: set[TaskKey] = set()
+        self._received_at: dict[EndpointId, datetime] = {}
         self._clamp_pending = False
         self._clamping = False
         self.cards: list[EndpointCard] = []
@@ -1024,8 +1027,17 @@ class ProgressWindow(QWidget):
             f"padding: {_dock_px(4)}px; }}"
         )
 
+    def mark_record_received(self, endpoint: EndpointId) -> None:
+        """Record local receipt time; remote probe clocks need not match this host."""
+        self._received_at[endpoint] = datetime.now().astimezone()
+
     def render(self, reduction: Reduction) -> None:
         """Render reducer state and consume only successful-task transitions for avatars."""
+        self._received_at = {
+            endpoint: received_at
+            for endpoint, received_at in self._received_at.items()
+            if endpoint in reduction.state.endpoints
+        }
         self._handled_completions.intersection_update(reduction.state.tasks)
         for transition in reduction.transitions:
             if (
@@ -1040,7 +1052,14 @@ class ProgressWindow(QWidget):
             has_active_queue = any(task.status in {"running", "pending"} for task in tasks)
             card.setVisible(has_active_queue)
             if has_active_queue:
-                card.update_state(reduction.state)
+                received_at = next(
+                    (
+                        value for endpoint, value in self._received_at.items()
+                        if endpoint.host == card.config.host and endpoint.port == card.config.port
+                    ),
+                    None,
+                )
+                card.update_state(reduction.state, received_at=received_at)
         self._refresh_card_area()
 
     def _rotate_avatar(self) -> None:

@@ -115,6 +115,39 @@ def test_telegram_uses_official_sendmessage_json_and_bounded_transport(tmp_path)
     assert call["max_response_bytes"] == MAX_RESPONSE_BYTES
 
 
+def test_desktop_sender_preserves_environment_credential_precedence(tmp_path, monkeypatch):
+    env_file(tmp_path, TELEGRAM_BOT_TOKEN="file-token")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "environment-token")
+    transport = FakeTransport([response({"ok": True, "result": {"message_id": 7}})])
+    settings = settings_for(tmp_path, telegram=TelegramNotificationConfig(True, "chat"))
+    assert NotificationSender(transport).send_platform("telegram", "done", settings).ok
+    assert transport.calls[0][1] == "https://api.telegram.org/botenvironment-token/sendMessage"
+
+
+@pytest.mark.parametrize("error", [RuntimeError("secret"), SystemExit("secret")])
+def test_platform_exception_does_not_skip_other_enabled_platforms(tmp_path, monkeypatch, error):
+    settings = settings_for(
+        tmp_path,
+        telegram=TelegramNotificationConfig(True, "chat"),
+        weixin=WeixinNotificationConfig(enabled=True),
+    )
+    sender = NotificationSender(transport=object())
+    calls = []
+
+    def send(platform, text, settings):
+        calls.append(platform)
+        if platform == "telegram":
+            raise error
+        return SafeResult(True, "sent", "", platform)
+
+    monkeypatch.setattr(sender, "send_platform", send)
+    results = sender.send_enabled("done", settings)
+    assert calls == ["telegram", "weixin"]
+    assert not results[0].ok
+    assert "secret" not in repr(results)
+    assert results[1].ok
+
+
 def test_weixin_reuses_persisted_context_and_only_calls_sendmessage(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "comfyui_progress_bridge.desktop.notifications.secrets.token_hex", lambda _n: "c" * 32

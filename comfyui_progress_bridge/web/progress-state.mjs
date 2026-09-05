@@ -40,7 +40,11 @@ export function reduceEvent(state, event) {
   } else if (event.type === "executing") {
     task.status = "running";
     const node = data.display_node ?? data.node_id ?? data.node;
-    if (typeof node === "string") task.nodeId = node;
+    if (typeof node === "string" && node !== task.nodeId) {
+      task.nodeId = node;
+      task.value = 0;
+      task.max = 0;
+    }
   } else if (TERMINAL_TYPES[event.type]) {
     task.status = TERMINAL_TYPES[event.type];
     if (task.status === "success") {

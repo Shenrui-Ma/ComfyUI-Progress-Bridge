@@ -1,14 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
-  PANEL_STORAGE_KEY,
+  panelLayout,
   clampPanelPosition,
   readPanelPreferences,
   writePanelPreferences,
 } from "./panel-preferences.mjs";
-import { createState, reduceEnvelope, viewModel } from "./progress-state.mjs";
-
-const LEGACY_COLLAPSED_KEY = "comfy-progress-bridge-collapsed";
+import { createClientState, initializeQueueStatus, reduceClientEvent } from "./progress-client.mjs";
+import { panelLanguage, panelText } from "./panel-i18n.mjs";
 
 function browserStorage() {
   try {
@@ -16,34 +15,6 @@ function browserStorage() {
   } catch {
     return null;
   }
-}
-
-function readCollapsed() {
-  try {
-    return localStorage.getItem(LEGACY_COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeCollapsed(collapsed) {
-  try {
-    localStorage.setItem(LEGACY_COLLAPSED_KEY, collapsed ? "1" : "0");
-  } catch {
-    // Restricted storage must not prevent the panel from working.
-  }
-}
-
-function readPreferences() {
-  const storage = browserStorage();
-  let hasCurrentSettings = false;
-  try {
-    hasCurrentSettings = storage?.getItem?.(PANEL_STORAGE_KEY) !== null;
-  } catch {
-    // The safe reader below supplies defaults.
-  }
-  const preferences = readPanelPreferences(storage);
-  return hasCurrentSettings ? preferences : { ...preferences, collapsed: readCollapsed() };
 }
 
 function addStyles() {
@@ -61,7 +32,7 @@ function addStyles() {
       box-sizing: border-box; color: var(--cpb-text); background: var(--cpb-panel);
       border: 1px solid color-mix(in srgb, var(--cpb-accent) 45%, #555);
       border-radius: 10px; box-shadow: 0 8px 28px #0008; backdrop-filter: blur(8px);
-      font: 13px/1.35 system-ui, sans-serif; overflow: hidden;
+      font: 13px/1.35 system-ui, sans-serif; overflow: auto; overscroll-behavior: contain;
       transform: scale(var(--cpb-scale, 1)); transform-origin: top left;
       opacity: var(--cpb-opacity, .92);
     }
@@ -70,10 +41,12 @@ function addStyles() {
     }
     #comfy-progress-bridge-panel[data-theme="system"] {
       --cpb-panel: var(--comfy-menu-bg, #202020);
+      --cpb-card: var(--comfy-input-bg, var(--comfy-menu-bg, #272b37));
       --cpb-text: var(--fg-color, #f4f6fc);
       --cpb-muted: var(--descrip-text, #aab1c3);
     }
     #comfy-progress-bridge-panel .cpb-header {
+      position: sticky; top: 0; z-index: 1;
       display: flex; align-items: center; gap: 7px; padding: 7px 8px;
       background: color-mix(in srgb, var(--cpb-card) 80%, transparent);
       border-bottom: 1px solid color-mix(in srgb, var(--cpb-text) 10%, transparent);
@@ -98,6 +71,8 @@ function addStyles() {
     #comfy-progress-bridge-panel[data-status="error"] .cpb-dot,
     #comfy-progress-bridge-panel[data-status="interrupted"] .cpb-dot { background: #ff6b6b; }
     #comfy-progress-bridge-panel .cpb-title { flex: 1; min-width: 0; }
+    #comfy-progress-bridge-panel .cpb-header button { flex-shrink: 0; }
+    #comfy-progress-bridge-panel .cpb-note { font-size: 11px; color: var(--cpb-muted); }
     #comfy-progress-bridge-panel button,
     #comfy-progress-bridge-panel select,
     #comfy-progress-bridge-panel input { font: inherit; }
@@ -158,12 +133,17 @@ function addStyles() {
   document.head.appendChild(style);
 }
 
+function localized(element, key) {
+  element.dataset.cpbText = key;
+  return element;
+}
+
 function row(label) {
   const element = document.createElement("div");
   element.className = "cpb-row";
   const name = document.createElement("span");
   name.className = "cpb-label";
-  name.textContent = label;
+  localized(name, label);
   const value = document.createElement("span");
   value.className = "cpb-value";
   element.append(name, value);
@@ -174,12 +154,14 @@ function rangeSetting(labelText, minimum, maximum, value) {
   const rowElement = document.createElement("div");
   rowElement.className = "cpb-setting-row";
   const label = document.createElement("label");
-  label.textContent = labelText;
+  localized(label, labelText);
   const input = document.createElement("input");
   input.type = "range";
   input.min = String(minimum);
   input.max = String(maximum);
   input.value = String(value);
+  input.id = `cpb-${labelText}`;
+  label.htmlFor = input.id;
   const output = document.createElement("output");
   rowElement.append(label, input, output);
   return { rowElement, input, output };
@@ -193,34 +175,58 @@ function createSettings(preferences) {
   const themeRow = document.createElement("div");
   themeRow.className = "cpb-setting-row";
   const themeLabel = document.createElement("label");
-  themeLabel.textContent = "Theme";
+  localized(themeLabel, "theme");
   const theme = document.createElement("select");
   theme.setAttribute("aria-label", "Progress panel theme");
+  theme.id = "cpb-theme";
+  themeLabel.htmlFor = theme.id;
   for (const [value, label] of [["system", "System"], ["dark", "Dark"], ["light", "Light"]]) {
     const option = document.createElement("option");
     option.value = value;
     option.textContent = label;
+    localized(option, value);
     theme.appendChild(option);
   }
   theme.value = preferences.theme;
   themeRow.append(themeLabel, theme);
 
-  const opacity = rangeSetting("Opacity", 55, 100, preferences.opacity);
+  const languageRow = document.createElement("div");
+  languageRow.className = "cpb-setting-row";
+  const languageLabel = localized(document.createElement("label"), "language");
+  const language = document.createElement("select");
+  language.id = "cpb-language";
+  languageLabel.htmlFor = language.id;
+  language.setAttribute("aria-label", "Progress panel language");
+  for (const [value, text] of [["auto", "Automatic"], ["en-US", "English"],
+    ["zh-CN", "简体中文"], ["ja-JP", "日本語"], ["ko-KR", "한국어"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    if (value === "auto") localized(option, "auto");
+    language.append(option);
+  }
+  language.value = preferences.language;
+  languageRow.append(languageLabel, language);
+  const opacity = rangeSetting("opacity", 55, 100, preferences.opacity);
   opacity.input.setAttribute("aria-label", "Progress panel opacity");
-  const scale = rangeSetting("Scale", 80, 125, preferences.scale);
+  const scale = rangeSetting("scale", 80, 125, preferences.scale);
   scale.input.setAttribute("aria-label", "Progress panel scale");
   const reset = document.createElement("button");
   reset.type = "button";
   reset.className = "cpb-reset-position";
-  reset.textContent = "Reset position";
-  settings.append(themeRow, opacity.rowElement, scale.rowElement, reset);
-  return { settings, theme, opacity, scale, reset };
+  localized(reset, "reset");
+  const note = localized(document.createElement("p"), "note");
+  note.className = "cpb-note";
+  settings.append(languageRow, themeRow, opacity.rowElement, scale.rowElement, reset, note);
+  return { settings, theme, language, opacity, scale, reset };
 }
 
 function createPanel() {
   addStyles();
   const storage = browserStorage();
-  let preferences = readPreferences();
+  let preferences = readPanelPreferences(storage);
+  let onAppearance = () => {};
+  const text = (key) => panelText(panelLanguage(preferences.language, navigator.language), key);
 
   const panel = document.createElement("section");
   panel.id = "comfy-progress-bridge-panel";
@@ -237,7 +243,7 @@ function createPanel() {
   dot.className = "cpb-dot";
   const title = document.createElement("span");
   title.className = "cpb-title";
-  title.textContent = "ComfyUI Progress";
+  localized(title, "title");
   const settingsButton = document.createElement("button");
   settingsButton.type = "button";
   settingsButton.className = "cpb-settings-button";
@@ -264,19 +270,28 @@ function createPanel() {
   body.append(rows, track);
   panel.append(header, controls.settings, body);
 
-  const status = row("Status");
-  const endpoint = row("Server");
-  const node = row("Node");
-  const queue = row("Queue");
-  rows.append(status.element, endpoint.element, node.element, queue.element);
+  const status = row("status");
+  const endpoint = row("server");
+  const node = row("node");
+  const queue = row("queue");
+  const updated = row("updated");
+  rows.append(status.element, endpoint.element, node.element, queue.element, updated.element);
   endpoint.value.textContent = window.location.host || "ComfyUI";
 
   const save = () => {
     preferences = writePanelPreferences(storage, preferences);
-    writeCollapsed(preferences.collapsed);
   };
 
   const applyAppearance = () => {
+    for (const element of panel.querySelectorAll("[data-cpb-text]")) {
+      element.textContent = text(element.dataset.cpbText);
+    }
+    panel.setAttribute("aria-label", text("title"));
+    for (const [element, key] of [[dragHandle, "move"], [settingsButton, "settings"],
+      [collapse, preferences.collapsed ? "expand" : "collapse"]]) {
+      element.setAttribute("aria-label", text(key));
+      element.title = text(key);
+    }
     panel.dataset.theme = preferences.theme;
     panel.style.setProperty("--cpb-opacity", String(preferences.opacity / 100));
     panel.style.setProperty("--cpb-scale", String(preferences.scale / 100));
@@ -285,34 +300,28 @@ function createPanel() {
     controls.opacity.output.textContent = `${preferences.opacity}%`;
     controls.scale.input.value = String(preferences.scale);
     controls.scale.output.textContent = `${preferences.scale}%`;
+    onAppearance();
   };
 
   const applyPosition = (position) => {
-    if (!position) {
-      panel.style.left = "auto";
-      panel.style.top = "58px";
-      panel.style.right = "16px";
-      preferences = { ...preferences, position: null };
-      return;
-    }
+    const viewport = {width: window.innerWidth, height: window.innerHeight};
+    const layout = panelLayout(position, preferences.scale, viewport);
+    panel.style.width = `${layout.width}px`;
+    panel.style.maxHeight = `${layout.maxHeight}px`;
     const rect = panel.getBoundingClientRect();
-    const safe = clampPanelPosition(position, rect, {
-      width: window.innerWidth,
-      height: window.innerHeight,
-    });
+    const safe = clampPanelPosition(layout, rect, viewport);
     panel.style.left = `${safe.x}px`;
     panel.style.top = `${safe.y}px`;
     panel.style.right = "auto";
-    preferences = { ...preferences, position: safe };
+    preferences = { ...preferences, position: position ? safe : null };
   };
 
   const setCollapsed = (collapsed) => {
     preferences = { ...preferences, collapsed };
     panel.classList.toggle("cpb-collapsed", collapsed);
     collapse.textContent = collapsed ? "▸" : "▾";
-    collapse.setAttribute("aria-label", collapsed
-      ? "Expand progress panel"
-      : "Collapse progress panel");
+    collapse.setAttribute("aria-label", text(collapsed ? "expand" : "collapse"));
+    collapse.setAttribute("aria-expanded", String(!collapsed));
     save();
   };
 
@@ -329,6 +338,25 @@ function createPanel() {
     controls.settings.hidden = !controls.settings.hidden;
     settingsButton.setAttribute("aria-expanded", String(!controls.settings.hidden));
     requestAnimationFrame(() => applyPosition(preferences.position));
+    if (!controls.settings.hidden) controls.language.focus();
+  });
+  controls.settings.id = "cpb-settings";
+  settingsButton.setAttribute("aria-controls", controls.settings.id);
+  panel.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !controls.settings.hidden) {
+      controls.settings.hidden = true;
+      settingsButton.setAttribute("aria-expanded", "false");
+      settingsButton.focus();
+      applyPosition(preferences.position);
+    }
+    // Panel keys must not trigger ComfyUI canvas shortcuts (e.g. space queues a prompt).
+    event.stopPropagation();
+  });
+  controls.language.addEventListener("change", () => {
+    preferences = {...preferences, language: controls.language.value};
+    applyAppearance();
+    applyPosition(preferences.position);
+    save();
   });
   controls.theme.addEventListener("change", () => {
     preferences = { ...preferences, theme: controls.theme.value };
@@ -353,7 +381,8 @@ function createPanel() {
 
   let drag = null;
   header.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target.closest("button, select, input")) return;
+    if (drag || event.isPrimary === false || event.button !== 0
+      || event.target.closest("button, select, input")) return;
     const rect = panel.getBoundingClientRect();
     drag = {
       pointerId: event.pointerId,
@@ -361,7 +390,7 @@ function createPanel() {
       offsetY: event.clientY - rect.top,
     };
     panel.classList.add("cpb-dragging");
-    header.setPointerCapture?.(event.pointerId);
+    try { header.setPointerCapture?.(event.pointerId); } catch { /* window listeners suffice */ }
     event.preventDefault();
   });
   window.addEventListener("pointermove", (event) => {
@@ -372,11 +401,15 @@ function createPanel() {
     if (!drag || drag.pointerId !== event.pointerId) return;
     drag = null;
     panel.classList.remove("cpb-dragging");
-    header.releasePointerCapture?.(event.pointerId);
+    try { header.releasePointerCapture?.(event.pointerId); } catch { /* already released */ }
     save();
   };
   window.addEventListener("pointerup", finishDrag);
   window.addEventListener("pointercancel", finishDrag);
+  header.addEventListener("lostpointercapture", finishDrag);
+  window.addEventListener("blur", () => {
+    if (drag) finishDrag({pointerId: drag.pointerId});
+  });
 
   dragHandle.addEventListener("keydown", (event) => {
     const movement = {
@@ -395,7 +428,6 @@ function createPanel() {
   });
 
   window.addEventListener("resize", () => {
-    if (!preferences.position) return;
     applyPosition(preferences.position);
     save();
   });
@@ -406,6 +438,9 @@ function createPanel() {
     node: node.value,
     queue: queue.value,
     fill,
+    updated: updated.value,
+    text,
+    onAppearance(callback) { onAppearance = callback; },
   };
 }
 
@@ -420,56 +455,50 @@ app.registerExtension({
   setup() {
     if (document.getElementById("comfy-progress-bridge-panel")) return;
     const ui = createPanel();
-    let state = createState();
-    let queueCount = 0;
-    let sequence = 0;
-    const browserInstance = window.location.origin || "comfyui-browser";
+    let state = createClientState();
+    let revision = 0;
 
     const render = () => {
-      const view = viewModel(state);
-      const labels = {
-        idle: "Idle",
-        running: view.max > 0 ? `Running · ${view.percent}%` : "Running",
-        success: "Complete",
-        error: "Failed",
-        interrupted: "Interrupted",
-      };
-      ui.panel.dataset.status = view.status;
-      ui.status.textContent = labels[view.status] || view.status;
-      ui.node.textContent = nodeName(view.nodeId);
-      ui.queue.textContent = String(queueCount);
-      ui.fill.style.width = `${view.percent}%`;
+      const view = state.task;
+      const status = state.connection !== "online" ? state.connection
+        : view?.status ?? (state.queue > 0 ? "queued" : "idle");
+      ui.panel.dataset.status = status;
+      ui.status.textContent = ui.text(status)
+        + (status === "running" && view?.max > 0 ? ` · ${view.percent}%` : "");
+      ui.node.textContent = nodeName(view?.nodeId);
+      ui.node.title = ui.node.textContent;
+      ui.queue.textContent = state.queue === null ? "—" : String(state.queue);
+      ui.updated.textContent = state.updatedAt === null ? "—"
+        : new Date(state.updatedAt).toLocaleTimeString();
+      const percent = view?.percent ?? 0;
+      ui.fill.style.width = `${percent}%`;
+      ui.fill.parentElement.setAttribute("aria-valuenow", String(percent));
     };
 
-    const dispatch = (type, detail = {}) => {
-      const data = { ...detail };
-      for (const key of ["prompt_id", "node", "node_id", "display_node"]) {
-        if (data[key] !== undefined && data[key] !== null) data[key] = String(data[key]);
-      }
-      state = reduceEnvelope(state, {
-        schema: 2,
-        instance_id: browserInstance,
-        sequence: ++sequence,
-        type,
-        data,
-      });
+    const dispatch = (type, detail) => {
+      const next = reduceClientEvent(state, type, detail);
+      if (next !== state) revision += 1;
+      state = next;
       render();
     };
 
-    api.addEventListener("executing", (event) => {
-      const type = event.detail?.node === null ? "execution_success" : "executing";
-      dispatch(type, event.detail);
-    });
+    api.addEventListener("executing", (event) => dispatch("executing", event.detail));
+    api.addEventListener("execution_start", (event) => dispatch("execution_start", event.detail));
     api.addEventListener("progress", (event) => dispatch("progress", event.detail));
     api.addEventListener("execution_error", (event) => dispatch("execution_error", event.detail));
     api.addEventListener("execution_interrupted", (event) => dispatch("execution_interrupted", event.detail));
     api.addEventListener("execution_success", (event) => dispatch("execution_success", event.detail));
-    api.addEventListener("status", (event) => {
-      const status = event.detail?.exec_info || event.detail?.status?.exec_info || {};
-      queueCount = Number.isFinite(status.queue_remaining) ? status.queue_remaining : queueCount;
-      if (queueCount === 0 && viewModel(state).status === "running") dispatch("idle");
-      render();
-    });
+    api.addEventListener("status", (event) => dispatch("status", event.detail));
+    api.addEventListener("reconnecting", () => dispatch("reconnecting"));
+    api.addEventListener("reconnected", () => dispatch("reconnected"));
+    const track = ui.fill.parentElement;
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-label", "Sampling progress");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
+    ui.onAppearance(render);
     render();
+    const initialRevision = revision;
+    void initializeQueueStatus(api, dispatch, () => revision === initialRevision);
   },
 });

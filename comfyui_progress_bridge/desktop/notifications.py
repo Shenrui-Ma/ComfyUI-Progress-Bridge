@@ -636,9 +636,14 @@ class NotificationSender:
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        credential_environ: dict[str, str] | None = None,
     ) -> None:
         self.clock = clock
         self.sleeper = sleeper
+        # None preserves desktop environment precedence; backend callers pass {}.
+        self.credential_environ = (
+            None if credential_environ is None else dict(credential_environ)
+        )
         if transport is None:
             self.monotonic = monotonic
             self.transport = UrllibTransport(monotonic=monotonic)
@@ -658,9 +663,9 @@ class NotificationSender:
         if not settings.notifications.enabled:
             return _safe_failure(platform, "disabled", "Notifications are disabled")
         config = settings.notifications
-        credentials = load_credentials(config.env_file)
-        deadline = self.monotonic() + float(config.timeout)
         try:
+            credentials = load_credentials(config.env_file, environ=self.credential_environ)
+            deadline = self.monotonic() + float(config.timeout)
             if platform == "telegram":
                 return self._telegram(text, config, credentials, deadline)
             if platform == "weixin":
@@ -728,7 +733,14 @@ class NotificationSender:
             )
             if value
         ]
-        return tuple(self.send_platform(name, text, settings) for name in enabled)
+        results = []
+        for name in enabled:
+            try:
+                results.append(self.send_platform(name, text, settings))
+            except BaseException:
+                # A failed adapter must not suppress delivery on another platform.
+                results.append(_safe_failure(name, "network_error", "Notification failed"))
+        return tuple(results)
 
     def _telegram(
         self,

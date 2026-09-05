@@ -37,15 +37,13 @@ def test_browser_extension_registers_and_listens_for_bridge_events():
         "status",
     ):
         assert f'api.addEventListener("{event_type}"' in source
-    assert "function readCollapsed()" in source
-    assert "function writeCollapsed(collapsed)" in source
     assert 'className = "cpb-settings-button"' in source
     assert 'className = "cpb-drag-handle"' in source
     assert 'header.addEventListener("pointerdown"' in source
     assert 'window.addEventListener("pointermove"' in source
     assert 'window.addEventListener("pointerup"' in source
     assert 'window.addEventListener("resize"' in source
-    assert "Reset position" in source
+    assert 'localized(reset, "reset")' in source
     assert ".innerHTML" not in source
 
 
@@ -91,6 +89,7 @@ def test_browser_panel_preferences_are_bounded_and_fail_closed():
     )
 
     expected_defaults = {
+        "language": "auto",
         "theme": "system",
         "opacity": 92,
         "scale": 100,
@@ -101,6 +100,7 @@ def test_browser_panel_preferences_are_bounded_and_fail_closed():
     assert output["hostile"] == expected_defaults
     assert output["invalid"] == expected_defaults
     assert output["loaded"] == {
+        "language": "auto",
         "theme": "light",
         "opacity": 63,
         "scale": 115,
@@ -129,6 +129,28 @@ def test_browser_panel_position_is_clamped_inside_viewport():
         "ordinary": {"x": 716, "y": 8},
         "tiny": {"x": 8, "y": 8},
     }
+
+
+def test_panel_fits_default_scaled_position_and_small_viewports():
+    module_url = (WEB / "panel-preferences.mjs").as_uri()
+    output = run_state_module(f"""
+      import {{ panelLayout, readPanelPreferences, PANEL_STORAGE_KEY }}
+        from {json.dumps(module_url)};
+      const storage={{getItem(key){{return key===PANEL_STORAGE_KEY ? null : '1';}}}};
+      console.log(JSON.stringify({{
+        large:panelLayout(null,125,{{width:800,height:600}}),
+        small:panelLayout(null,125,{{width:280,height:220}}),
+        legacy:readPanelPreferences(storage).collapsed,
+        huge:readPanelPreferences({{getItem(){{return ' '.repeat(10000);}}}}).scale
+      }}));
+    """)
+    for key, width, height in [("large", 800, 600), ("small", 280, 220)]:
+        layout = output[key]
+        assert layout["x"] >= 8 and layout["y"] >= 8
+        assert layout["x"] + layout["width"] * layout["scale"] <= width
+        assert layout["maxHeight"] * layout["scale"] + layout["y"] <= height
+    assert output["legacy"] is True
+    assert output["huge"] == 100
 
 
 def test_browser_state_reduces_progress_and_terminal_events():

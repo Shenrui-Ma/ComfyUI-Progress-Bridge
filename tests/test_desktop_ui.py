@@ -1,6 +1,7 @@
 import os
 import threading
 from dataclasses import replace
+from datetime import datetime
 from uuid import UUID
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -430,7 +431,9 @@ def test_monitor_groups_probe_processes_by_transport(app, tmp_path, monkeypatch)
     assert {key.endpoint.port for key in monitor.reducer.state.tasks} == {8188, 8189}
 
 
-def test_disabled_monitor_has_no_sources_and_tray_recovery_restarts(app, tmp_path, monkeypatch):
+def test_hidden_monitor_keeps_sources_and_queue_epoch_across_tray_toggle(
+    app, tmp_path, monkeypatch
+):
     created = []
 
     class FakeSource:
@@ -456,15 +459,156 @@ def test_disabled_monitor_has_no_sources_and_tray_recovery_restarts(app, tmp_pat
     window = ProgressWindow(settings, store=SettingsStore(tmp_path / "settings.json"))
     monitor = DesktopMonitor(window, settings)
     monitor.start()
-    assert monitor.sources == [] and created == []
+    monitor.start()
+    assert len(created) == 1 and created[0].started
+    monitor.consume_record({
+        "kind": "snapshot",
+        "endpoint": {"host": "127.0.0.1", "port": 8188},
+        "instance_id": str(UUID(int=1)),
+        "observed_at": 1.0,
+        "online": True,
+        "running_prompt_ids": ["prompt"],
+        "pending_prompt_ids": [],
+    })
+    busy_state = monitor.reducer.state
 
     window.show_action.trigger()
     assert window.isVisible()
     assert len(created) == 1 and created[0].started
     window.set_dock_enabled(False)
     assert window.isHidden()
-    assert monitor.sources == []
+    assert monitor.sources == created
+    assert not created[0].stopped
+    assert monitor.reducer.state is busy_state
+    dispatched = []
+    monkeypatch.setattr(
+        monitor.dispatcher, "dispatch", lambda reduction, names: dispatched.append(reduction)
+    )
+    monitor.consume_record({
+        "kind": "snapshot",
+        "endpoint": {"host": "127.0.0.1", "port": 8188},
+        "instance_id": str(UUID(int=1)),
+        "observed_at": 2.0,
+        "online": True,
+        "running_prompt_ids": [],
+        "pending_prompt_ids": [],
+    })
+    assert [transition.kind for transition in dispatched[-1].transitions] == ["queue_completed"]
+    monitor.shutdown()
     assert created[0].stopped and created[0].joined
+    assert not monitor.expiry_timer.isActive()
+
+
+def test_updated_time_tracks_accepted_source_records_not_repaints(app, tmp_path, monkeypatch):
+    from comfyui_progress_bridge.desktop import widgets
+
+    clock = {"value": datetime(2026, 9, 5, 12, 0, 0).astimezone()}
+
+    class Clock:
+        @staticmethod
+        def now():
+            return clock["value"]
+
+    monkeypatch.setattr(widgets, "datetime", Clock)
+    settings = AppSettings()
+    window = ProgressWindow(settings, store=SettingsStore(tmp_path / "timestamp.json"))
+    monitor = DesktopMonitor(window, settings)
+    record = {
+        "kind": "snapshot",
+        "endpoint": {"host": "127.0.0.1", "port": 8188},
+        "instance_id": str(UUID(int=1)),
+        "observed_at": 1.0,
+        "online": True,
+        "running_prompt_ids": ["prompt"],
+        "pending_prompt_ids": [],
+    }
+    monitor.consume_record(record)
+    assert window.cards[0].timestamp_label.text().endswith("12:00:00")
+    clock["value"] = datetime(2026, 9, 5, 12, 5, 0).astimezone()
+    monitor.expire()
+    assert window.cards[0].timestamp_label.text().endswith("12:00:00")
+    monitor.apply_settings(settings)
+    assert window.cards[0].timestamp_label.text().endswith("12:00:00")
+    monitor.consume_record({**record, "observed_at": 2.0})
+    assert window.cards[0].timestamp_label.text().endswith("12:05:00")
+    event = {
+        "kind": "event",
+        "endpoint": record["endpoint"],
+        "instance_id": record["instance_id"],
+        "observed_at": 3.0,
+        "sequence": 1,
+        "type": "progress",
+        "data": {"prompt_id": "prompt", "value": 1, "max": 20},
+    }
+    monitor.consume_record(event)
+    clock["value"] = datetime(2026, 9, 5, 12, 10, 0).astimezone()
+    monitor.consume_record(event)
+    assert window.cards[0].timestamp_label.text().endswith("12:05:00")
+    monitor.shutdown()
+
+
+def test_snapshot_workflow_metadata_enriches_events_and_expires_with_queue(app, tmp_path):
+    window = ProgressWindow(AppSettings(), store=SettingsStore(tmp_path / "metadata.json"))
+    monitor = DesktopMonitor(window, window.settings)
+    common = {
+        "endpoint": {"host": "127.0.0.1", "port": 8188},
+        "instance_id": str(UUID(int=1)),
+        "observed_at": 1.0,
+    }
+    snapshot = {
+        **common, "kind": "snapshot", "online": True,
+        "running_prompt_ids": ["prompt"], "pending_prompt_ids": [],
+        "workflows": {"prompt": {"12": {
+            "display_node": "Portrait sampler", "node_type": "KSampler",
+            "inputs": {"prompt": "private input"},
+        }}},
+    }
+    monitor.consume_record(snapshot)
+    event = {
+        **common, "kind": "event", "sequence": 1, "type": "executing",
+        "data": {"prompt_id": "prompt", "node": "12"},
+    }
+    monitor.consume_record(event)
+    task = next(iter(monitor.reducer.state.tasks.values()))
+    assert (task.node_name, task.node_type, task.stage_key) == (
+        "Portrait sampler", "KSampler", "sampling"
+    )
+    assert "inputs" not in repr(monitor._workflow_metadata)
+    assert event["data"] == {"prompt_id": "prompt", "node": "12"}
+    snapshot["workflows"]["prompt"]["12"]["display_node"] = "mutated"
+    monitor.consume_record({**event, "sequence": 2})
+    assert next(iter(monitor.reducer.state.tasks.values())).node_name == "Portrait sampler"
+
+    monitor.consume_record({**snapshot, "running_prompt_ids": [], "workflows": {}})
+    assert monitor._workflow_metadata == {}
+    monitor.consume_record({**snapshot, "workflows": {}})
+    monitor.consume_record({**event, "sequence": 3})
+    assert next(iter(monitor.reducer.state.tasks.values())).node_name == "12"
+    monitor.shutdown()
+
+
+def test_workflow_metadata_is_bounded_and_generation_scoped(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop_app, "MAX_CACHED_WORKFLOW_NODES", 2)
+    window = ProgressWindow(AppSettings(), store=SettingsStore(tmp_path / "bounded-metadata.json"))
+    monitor = DesktopMonitor(window, window.settings)
+    snapshot = {
+        "kind": "snapshot", "online": True, "observed_at": 1.0,
+        "endpoint": {"host": "127.0.0.1", "port": 8188},
+        "instance_id": str(UUID(int=1)),
+        "running_prompt_ids": ["prompt"], "pending_prompt_ids": [],
+        "workflows": {"prompt": {
+            str(index): {"display_node": "Sampler", "node_type": "KSampler"}
+            for index in range(5)
+        }},
+    }
+    monitor.consume_record(snapshot)
+    assert sum(len(nodes) for nodes in monitor._workflow_metadata.values()) == 2
+    # An offline snapshot from another process generation is rejected.
+    monitor.consume_record({**snapshot, "instance_id": str(UUID(int=2)), "online": False})
+    assert all(key.endpoint.instance_id == UUID(int=1) for key in monitor._workflow_metadata)
+    monitor.consume_record({**snapshot, "instance_id": str(UUID(int=2)), "workflows": {}})
+    assert monitor._workflow_metadata == {}
+    monitor.shutdown()
 
 
 def test_live_settings_restart_uses_complete_transport_key(app, tmp_path, monkeypatch):

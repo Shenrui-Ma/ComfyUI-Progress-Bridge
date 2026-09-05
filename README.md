@@ -153,18 +153,24 @@ best-effort side effects that fail open.
 The browser panel is served by ComfyUI from the plugin's `WEB_DIRECTORY` and loads automatically.
 It requires no separate process or UDP forwarding.
 
+The browser panel and the native dock shown above are separate interfaces. Both local and
+remote ComfyUI use the same browser assets. See [local installation troubleshooting](docs/local-install-troubleshooting.md)
+if the native dock does not appear or a browser still shows the old fixed panel.
+
 It displays:
 
 - connected ComfyUI endpoint;
-- running and pending queue counts;
-- current node and friendly stage;
+- total remaining queue count;
+- current node name from the current client's graph;
 - sampler progress percentage;
 - success, error, interruption, and idle states;
 - mouse/touch dragging and keyboard arrow-key movement;
 - system, dark, and light themes;
 - configurable opacity and 80–125% scale;
 - viewport-clamped position restore and one-click position reset;
-- persistent appearance, position, and collapsed/expanded settings.
+- persistent appearance, position, and collapsed/expanded settings;
+- Chinese, English, Japanese and Korean labels with automatic language selection;
+- explicit connection state and the time of the last accepted update.
 
 The panel listens to ComfyUI's existing client-routed WebSocket events, preserving the normal client
 privacy boundary. It does not rebroadcast one user's prompt or execution details to all browsers.
@@ -312,7 +318,7 @@ The following limits are enforced by code and regression tests rather than being
 
 | Metric | Enforced value / behavior |
 | --- | --- |
-| Automated regression suite | **430 tests** in the current release line |
+| Automated regression suite | **453 tests** as of 2026-09-05 |
 | CI runtime matrix | Python **3.10, 3.11, 3.12, and 3.13** |
 | UDP datagram ceiling | **8192 bytes** |
 | Prompt ID bound | **256 characters** |

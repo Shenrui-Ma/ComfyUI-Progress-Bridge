@@ -1,4 +1,5 @@
-import os
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,18 +21,38 @@ def test_launcher_starts_detached_desktop_with_importing_port():
     assert desktop_launcher.launch_desktop(8189, popen=popen, environ={}) is True
     assert len(launches) == 1
     argv, kwargs = launches[0]
-    assert argv == [
-        sys.executable,
-        "-m",
-        "comfyui_progress_bridge.desktop.autostart",
-        "127.0.0.1:8189",
-    ]
+    assert argv[0] == sys.executable
+    assert argv[-2:] == ["comfyui_progress_bridge.desktop.autostart", "127.0.0.1:8189"]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdin"] is not None
     assert kwargs["stdout"] is not None
     assert kwargs["stderr"] is not None
     package_root = str(Path(desktop_launcher.__file__).resolve().parents[1])
-    assert kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0] == package_root
+    assert package_root in argv
+
+
+def test_launcher_works_when_embedded_python_ignores_pythonpath(tmp_path, monkeypatch):
+    from comfyui_progress_bridge import desktop_launcher
+
+    root = tmp_path / "portable app '中文'"
+    desktop = root / "comfyui_progress_bridge" / "desktop"
+    desktop.mkdir(parents=True)
+    (desktop.parent / "__init__.py").write_text(
+        "import os\nassert os.environ['COMFY_PROGRESS_BRIDGE_COMPANION'] == '1'\n"
+    )
+    (desktop / "__init__.py").write_text("")
+    (desktop / "autostart.py").write_text("import json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+    monkeypatch.setattr(desktop_launcher, "__file__", str(desktop.parent / "desktop_launcher.py"))
+    launches = []
+    desktop_launcher.launch_desktop(
+        8189, environ={}, popen=lambda argv, **kw: launches.append(argv)
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", *launches[0][1:]],
+        cwd=tmp_path, text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["127.0.0.1:8189"]
 
 
 def test_launcher_can_be_disabled_for_headless_hosts():
@@ -56,6 +77,22 @@ def test_launcher_failure_is_fail_open():
         raise OSError("cannot spawn")
 
     assert desktop_launcher.launch_desktop(8188, popen=fail, environ={}) is False
+
+
+def test_companion_probe_does_not_import_or_parse_comfyui(tmp_path):
+    from comfyui_progress_bridge.desktop_launcher import companion_argv
+
+    # A checkout's cwd may contain ComfyUI; importing it in a child would parse
+    # probe/desktop arguments as ComfyUI flags and may launch another server.
+    (tmp_path / "comfy").mkdir()
+    (tmp_path / "comfy" / "__init__.py").write_text("raise RuntimeError('imported host')")
+    result = subprocess.run(
+        companion_argv("comfyui_progress_bridge.monitor.remote_probe", "--help"),
+        cwd=tmp_path, text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+    assert "ComfyUI Progress Bridge]" not in result.stdout
 
 
 def test_runtime_endpoint_override_uses_importing_comfy_port():

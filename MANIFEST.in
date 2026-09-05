@@ -1,3 +1,5 @@
 include docs/backend-notifications.md
+include docs/local-install-troubleshooting.md
 include docs/images/*.png
 include README.zh-CN.md
+include tests/browser_preview.py

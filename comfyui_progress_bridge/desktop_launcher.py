@@ -12,6 +12,22 @@ from typing import Any
 _AUTOSTART_FALSE = frozenset({"0", "false", "no", "off"})
 
 
+def companion_argv(module: str, *arguments: str) -> list[str]:
+    """Bootstrap our checkout even in Windows embedded Python with a ._pth file.
+
+    Pass paths as argv data, never interpolate them into Python/shell code.
+    Companion processes must not import ComfyUI's server or parse its CLI args.
+    """
+    bootstrap = (
+        "import os,sys,runpy; "
+        "os.environ['COMFY_PROGRESS_BRIDGE_COMPANION']='1'; "
+        "sys.path.insert(0,sys.argv.pop(1)); "
+        "runpy.run_module(sys.argv.pop(1),run_name='__main__',alter_sys=True)"
+    )
+    return [sys.executable, "-c", bootstrap, str(Path(__file__).resolve().parents[1]),
+            module, *arguments]
+
+
 def launch_desktop(
     comfy_port: int,
     *,
@@ -36,18 +52,8 @@ def launch_desktop(
     ):
         return False
 
-    argv = [
-        sys.executable,
-        "-m",
-        "comfyui_progress_bridge.desktop.autostart",
-        f"127.0.0.1:{comfy_port}",
-    ]
+    argv = companion_argv("comfyui_progress_bridge.desktop.autostart", f"127.0.0.1:{comfy_port}")
     child_environ = dict(values)
-    package_root = str(Path(__file__).resolve().parents[1])
-    existing_pythonpath = child_environ.get("PYTHONPATH", "")
-    child_environ["PYTHONPATH"] = os.pathsep.join(
-        part for part in (package_root, existing_pythonpath) if part
-    )
     spawn_options: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,

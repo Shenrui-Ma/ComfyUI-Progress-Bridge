@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 from dataclasses import replace
+from itertools import islice
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -13,6 +14,7 @@ from uuid import UUID
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
+from ..desktop_launcher import companion_argv
 from ..monitor.models import (
     EndpointId,
     EndpointState,
@@ -30,6 +32,8 @@ from .audio import CompletionAudio
 from .notifications import CompletionDispatcher, NotificationSender
 from .settings import AppSettings, EndpointConfig, SettingsStore
 from .widgets import ProgressWindow
+
+MAX_CACHED_WORKFLOW_NODES = 4096
 
 
 def classify_source_error(message: str) -> str:
@@ -105,6 +109,7 @@ class DesktopMonitor(QObject):
         self.sources: list[LocalSource] = []
         self.errors: list[str] = []
         self._source_errors: dict[object, str] = {}
+        self._workflow_metadata: dict[TaskKey, dict[str, dict[str, str]]] = {}
         self.dispatcher = dispatcher or CompletionDispatcher(
             NotificationSender(), settings, audio=CompletionAudio()
         )
@@ -123,13 +128,72 @@ class DesktopMonitor(QObject):
         if isinstance(model, QueueSnapshot):
             reduction = self.reducer.apply_snapshot(model)
             if reduction.accepted is True:
+                self._cache_workflow_metadata(model, record.get("workflows"))
+                self.window.mark_record_received(model.endpoint)
                 self._mark_source_recovered(source_key)
             self._render(reduction)
         elif isinstance(model, EventEnvelope):
+            model = self._enrich_event(model)
             reduction = self.reducer.apply_event(model)
             if reduction.accepted is True:
+                self.window.mark_record_received(model.endpoint)
                 self._mark_source_recovered(source_key)
             self._render(reduction)
+
+    def _cache_workflow_metadata(self, snapshot: QueueSnapshot, workflows: object) -> None:
+        """Keep bounded display-only metadata for authoritative active queue entries."""
+        endpoints = self.reducer.state.endpoints
+        self._workflow_metadata = {
+            key: nodes for key, nodes in self._workflow_metadata.items()
+            if key.endpoint in endpoints
+            and key.prompt_id in (endpoints[key.endpoint].active_prompt_ids or ())
+            and (not snapshot.online or key.endpoint != snapshot.endpoint)
+        }
+        if not snapshot.online or not isinstance(workflows, dict):
+            return
+        remaining = MAX_CACHED_WORKFLOW_NODES - sum(
+            len(nodes) for nodes in self._workflow_metadata.values()
+        )
+        active = endpoints[snapshot.endpoint].active_prompt_ids or ()
+        for prompt_id, workflow in islice(workflows.items(), MAX_CACHED_WORKFLOW_NODES):
+            if remaining <= 0:
+                break
+            if not isinstance(prompt_id, str) or prompt_id not in active:
+                continue
+            if not isinstance(workflow, dict):
+                continue
+            nodes = {}
+            for node_id, raw_fields in islice(workflow.items(), remaining):
+                remaining -= 1
+                if not isinstance(node_id, str) or not 0 < len(node_id) <= 1024:
+                    continue
+                if not isinstance(raw_fields, dict):
+                    continue
+                fields = {
+                    name: value for name in ("display_node", "node_type")
+                    if isinstance(value := raw_fields.get(name), str) and 0 < len(value) <= 1024
+                }
+                if fields:
+                    nodes[node_id] = fields
+            if nodes:
+                self._workflow_metadata[TaskKey(snapshot.endpoint, prompt_id)] = nodes
+
+    def _enrich_event(self, event: EventEnvelope) -> EventEnvelope:
+        prompt_id = event.data.get("prompt_id")
+        node_id = event.data.get("node") or event.data.get("node_id")
+        if not isinstance(prompt_id, str) or not prompt_id or not isinstance(node_id, str):
+            return event
+        nodes = self._workflow_metadata.get(TaskKey(event.endpoint, prompt_id), {})
+        fields = nodes.get(node_id)
+        if not fields:
+            return event
+        data = dict(event.data)
+        for name, value in fields.items():
+            if not data.get(name):
+                data[name] = value
+        if not data.get("display_node") and fields.get("node_type"):
+            data["display_node"] = fields["node_type"]
+        return replace(event, data=data)
 
     def _mark_source_recovered(self, source_key: object) -> None:
         """Clear only the recovering source; preserve errors from other probes."""
@@ -195,7 +259,6 @@ class DesktopMonitor(QObject):
             return
         def source_configuration(value: AppSettings) -> tuple[object, ...]:
             return (
-                value.dock_enabled,
                 tuple(
                     (
                         endpoint.host,
@@ -224,6 +287,7 @@ class DesktopMonitor(QObject):
             return
         self.stop()
         self.reducer = MonitorReducer(terminal_retention=30.0)
+        self._workflow_metadata.clear()
         self._source_errors.clear()
         self.window.clear_source_error()
         self.window.render(Reduction(MonitorState()))
@@ -231,7 +295,7 @@ class DesktopMonitor(QObject):
 
     def start(self) -> None:
         """Start one probe per complete transport, grouping all its endpoint ports."""
-        if not self.settings.dock_enabled:
+        if self.sources:
             return
         self._generation += 1
         generation = self._generation
@@ -256,12 +320,7 @@ class DesktopMonitor(QObject):
             targets = [f"{endpoint.host}:{endpoint.port}" for endpoint in local_endpoints]
             self.sources.append(
                 LocalSource(
-                    [
-                        sys.executable,
-                        "-m",
-                        "comfyui_progress_bridge.monitor.remote_probe",
-                        *targets,
-                    ],
+                    companion_argv("comfyui_progress_bridge.monitor.remote_probe", *targets),
                     on_record=(
                         lambda record, token=generation, key=source_key: self._record_callback(
                             token, key, record
@@ -315,7 +374,9 @@ class DesktopMonitor(QObject):
 
     def shutdown(self) -> None:
         """Stop probes and the bounded notification worker for application exit."""
+        self.expiry_timer.stop()
         self.stop()
+        self._workflow_metadata.clear()
         self.dispatcher.shutdown()
 
 

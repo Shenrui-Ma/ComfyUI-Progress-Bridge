@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 import time
@@ -9,6 +10,7 @@ import pytest
 from comfyui_progress_bridge.backend_notifications import (
     BACKEND_CONFIG_ENV,
     QueueDrainedNotifier,
+    _private_file,
     install_backend_notifications,
     load_backend_notification_config,
 )
@@ -107,25 +109,25 @@ def test_ui_managed_backend_config_is_disabled_by_default(tmp_path):
     assert load_backend_notification_config({}, default_path=settings_path) is None
 
 
-def test_enabled_backend_platform_requires_its_credentials_and_target(tmp_path):
+def test_missing_platform_credentials_or_target_do_not_disable_backend(tmp_path):
     path = write_config(tmp_path)
     credentials = tmp_path / "credentials.env"
     credentials.write_text("WEIXIN_TOKEN=not-a-telegram-token\n")
     credentials.chmod(0o600)
 
-    with pytest.raises(ValueError, match="Telegram backend credentials"):
-        load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+    assert load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)}) is not None
 
     credentials.write_text("TELEGRAM_BOT_TOKEN=test-only\n")
     path = write_config(
         tmp_path,
         telegram={"enabled": True, "chat_id": "", "thread_id": None},
     )
-    with pytest.raises(ValueError, match="Telegram backend target"):
-        load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+    assert load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)}) is not None
 
 
-def test_enabled_weixin_backend_requires_private_persisted_context(tmp_path):
+def test_unsafe_weixin_context_is_rejected_at_send_without_disabling_backend(tmp_path):
+    from comfyui_progress_bridge.desktop.notifications import NotificationSender
+
     credentials = tmp_path / "credentials.env"
     credentials.write_text("WEIXIN_TOKEN=test-only\n")
     credentials.chmod(0o600)
@@ -147,8 +149,12 @@ def test_enabled_weixin_backend_requires_private_persisted_context(tmp_path):
 
     assert load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)}) is not None
     context.chmod(0o644)
-    with pytest.raises(ValueError, match="Weixin backend context"):
-        load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+    loaded = load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+    assert loaded is not None
+    sender = NotificationSender(transport=object(), credential_environ={})
+    result = sender.send_platform("weixin", "done", loaded.settings)
+    assert not result.ok
+    assert result.code == "missing_context_token"
 
 
 def test_backend_config_must_be_enabled_host_local_and_private(tmp_path):
@@ -187,6 +193,61 @@ def test_backend_credentials_file_must_be_private_regular_and_bounded(tmp_path, 
 
     with pytest.raises(ValueError, match="private regular file"):
         load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+
+
+@pytest.mark.parametrize("mode", [0o400, 0o700])
+@pytest.mark.parametrize("target", ["config", "credentials"])
+def test_backend_requires_exact_private_file_mode(tmp_path, mode, target):
+    config = write_config(tmp_path)
+    path = config if target == "config" else tmp_path / "credentials.env"
+    path.chmod(mode)
+    with pytest.raises(ValueError, match="private regular file"):
+        load_backend_notification_config({BACKEND_CONFIG_ENV: str(config)})
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO support")
+def test_backend_rejects_fifo_swapped_between_stat_and_open_without_blocking(
+    tmp_path, monkeypatch
+):
+    path = write_config(tmp_path)
+    original_open = os.open
+    swapped = False
+
+    def swap_and_open(candidate, flags):
+        nonlocal swapped
+        assert flags & os.O_NONBLOCK, "opening a replaced FIFO must never block"
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        swapped = True
+        return original_open(candidate, flags)
+
+    monkeypatch.setattr(os, "open", swap_and_open)
+    with pytest.raises(ValueError, match="private regular file"):
+        _private_file(path, 1024)
+    assert swapped
+
+
+def test_backend_private_file_reads_all_short_chunks(tmp_path, monkeypatch):
+    path = write_config(tmp_path)
+    expected = path.read_bytes()
+    original_read = os.read
+    monkeypatch.setattr(os, "read", lambda fd, size: original_read(fd, min(size, 7)))
+    assert _private_file(path, len(expected)) == expected
+
+
+def test_backend_private_file_growth_stays_bounded(tmp_path, monkeypatch):
+    path = write_config(tmp_path)
+    limit = path.stat().st_size
+    requested = []
+
+    def growing_read(fd, size):
+        requested.append(size)
+        return b"x" * size
+
+    monkeypatch.setattr(os, "read", growing_read)
+    with pytest.raises(ValueError, match="too large"):
+        _private_file(path, limit)
+    assert sum(requested) == limit + 1
 
 
 @pytest.mark.parametrize(
@@ -476,3 +537,71 @@ def test_invalid_backend_config_is_fail_open_and_never_logs_exception_details(mo
     output = capsys.readouterr().out
     assert "backend notifications disabled" in output
     assert "DO-NOT-LOG-CONFIG-CONTENTS" not in output
+
+
+def test_invalid_udp_config_does_not_disable_backend(monkeypatch, tmp_path):
+    import comfyui_progress_bridge
+
+    class Server:
+        def send_sync(self, event, data, sid=None):
+            return None
+
+    comfy = types.ModuleType("comfy")
+    cli = types.ModuleType("comfy.cli_args")
+    cli.args = types.SimpleNamespace(port=8188)
+    server = types.ModuleType("server")
+    server.PromptServer = Server
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.cli_args", cli)
+    monkeypatch.setitem(sys.modules, "server", server)
+    monkeypatch.setenv("COMFY_PROGRESS_BRIDGE_PORT", "invalid")
+    config = load_backend_notification_config({BACKEND_CONFIG_ENV: str(write_config(tmp_path))})
+    monkeypatch.setattr(comfyui_progress_bridge, "load_backend_notification_config", lambda: config)
+    installed = []
+    monkeypatch.setattr(
+        comfyui_progress_bridge,
+        "install_backend_notifications",
+        lambda server, config: installed.append((server, config)) or True,
+    )
+    comfyui_progress_bridge.install_comfyui_bridge(desktop_launcher=lambda _: False)
+    assert installed == [(Server, config)]
+
+
+def test_backend_installed_sender_ignores_process_credentials(monkeypatch, tmp_path):
+    from comfyui_progress_bridge.desktop.notifications import NotificationSender, SafeResult
+
+    class Server:
+        def send_sync(self, event, data, sid=None):
+            return None
+
+    config = load_backend_notification_config({BACKEND_CONFIG_ENV: str(write_config(tmp_path))})
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "unrelated-process-token")
+    seen = []
+
+    def record(self, text, settings, credentials, deadline):
+        seen.append(credentials["TELEGRAM_BOT_TOKEN"])
+        return SafeResult(True, "sent", "", "telegram")
+
+    monkeypatch.setattr(NotificationSender, "_telegram", record)
+    assert install_backend_notifications(Server, config)
+    notifier = Server.send_sync._comfy_progress_backend_notifier
+    try:
+        notifier.sender.send_enabled("done", config.settings)
+        assert seen == ["test-only"]
+    finally:
+        assert notifier.shutdown()
+
+
+def test_incomplete_weixin_does_not_block_healthy_telegram(monkeypatch, tmp_path):
+    from comfyui_progress_bridge.desktop.notifications import NotificationSender, SafeResult
+
+    path = write_config(tmp_path, weixin={"enabled": True})
+    config = load_backend_notification_config({BACKEND_CONFIG_ENV: str(path)})
+    sender = NotificationSender(transport=object(), credential_environ={})
+    monkeypatch.setattr(
+        sender, "_telegram", lambda *args: SafeResult(True, "sent", "", "telegram")
+    )
+    results = sender.send_enabled("done", config.settings)
+    assert results[0].ok
+    assert results[1].platform == "weixin"
+    assert not results[1].ok

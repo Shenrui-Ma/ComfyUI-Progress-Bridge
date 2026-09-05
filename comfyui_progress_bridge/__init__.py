@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from .backend_notifications import (
@@ -20,6 +21,8 @@ def install_comfyui_bridge(
     *, desktop_launcher: Callable[[int], bool] | None = None
 ) -> bool:
     """Install the event mirror and start its local desktop companion."""
+    if os.environ.get("COMFY_PROGRESS_BRIDGE_COMPANION") == "1":
+        return False
     try:
         from comfy.cli_args import args
         from server import PromptServer
@@ -28,6 +31,7 @@ def install_comfyui_bridge(
             return False
         raise
 
+    installed = False
     try:
         comfy_port = int(args.port)
         installed = install_bridge(PromptServer, comfy_port)
@@ -40,20 +44,19 @@ def install_comfyui_bridge(
             except Exception as exc:
                 status = f"unavailable: {exc}"
             print(f"[ComfyUI Progress Bridge] desktop launch {status}")
-        try:
-            backend_config = load_backend_notification_config()
-            if backend_config is not None:
-                backend_installed = install_backend_notifications(PromptServer, backend_config)
-                if backend_installed:
-                    print("[ComfyUI Progress Bridge] backend notifications enabled")
-        except Exception:
-            # Never expose malformed local config contents, which could include credentials.
-            print("[ComfyUI Progress Bridge] backend notifications disabled")
-        return installed
     except Exception as exc:
         # A monitoring extension must not prevent ComfyUI from starting.
         print(f"[ComfyUI Progress Bridge] disabled: {exc}")
-        return False
+    try:
+        backend_config = load_backend_notification_config()
+        if backend_config is not None:
+            backend_installed = install_backend_notifications(PromptServer, backend_config)
+            if backend_installed:
+                print("[ComfyUI Progress Bridge] backend notifications enabled")
+    except Exception:
+        # Never expose malformed local config contents, which could include credentials.
+        print("[ComfyUI Progress Bridge] backend notifications disabled")
+    return installed
 
 
 install_comfyui_bridge()
