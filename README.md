@@ -8,7 +8,8 @@
 [![License](https://img.shields.io/badge/License-MIT-6C8EFF)](LICENSE)
 
 Lightweight, privacy-first ComfyUI progress monitoring with a browser panel, optional desktop dock,
-and UDP bridge. Sends Telegram and Weixin alerts when the queue finishes—**no extra workflow nodes
+and UDP bridge. Monitor multiple local and remote ComfyUI processes simultaneously.
+Sends Telegram and Weixin alerts when the queue finishes—**no extra workflow nodes
 or workflow changes required**.
 
 <p align="center">

@@ -8,6 +8,7 @@
 [![License](https://img.shields.io/badge/License-MIT-6C8EFF)](LICENSE)
 
 轻量、隐私优先的 ComfyUI 进度插件，提供浏览器面板、可选桌面悬浮窗和 UDP 事件桥。
+支持同时监控多个 ComfyUI 进程，兼容本地与远程实例。
 队列完成后可直接发送 Telegram/微信提醒，**无需额外工作流节点，不改动工作流**。
 
 <p align="center">
