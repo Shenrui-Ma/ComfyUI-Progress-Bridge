@@ -19,7 +19,7 @@
 <br clear="right">
 
 <p align="center">
-  <img src="docs/images/comfyui-progress-dock.png" width="480" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
+  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge 多端点桌面悬浮窗与设置界面，搭配可露希尔插画">
 </p>
 <p align="center"><sub>多端点进度监控与桌面设置，点击图片查看原图。</sub></p>
 

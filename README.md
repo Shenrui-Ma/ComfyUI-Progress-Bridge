@@ -20,7 +20,7 @@ workflow JSON, queue controls, prompts, models, or generated media.
 <br clear="right">
 
 <p align="center">
-  <img src="docs/images/comfyui-progress-dock.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
+  <img src="docs/images/comfyui-progress-overview.png" width="480" alt="ComfyUI Progress Bridge multi-endpoint desktop dock and settings with a Closure character illustration">
 </p>
 <p align="center"><sub>Multi-endpoint progress monitoring and desktop settings. Click the image for full size.</sub></p>
 
