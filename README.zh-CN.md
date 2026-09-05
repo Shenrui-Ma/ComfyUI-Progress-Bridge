@@ -21,12 +21,10 @@
 <div align="center">
 <table><tr><td width="320">
 
-https://github.com/user-attachments/assets/2162ce3f-f9c2-4dfa-8ec7-2e9775b76271
+https://github.com/user-attachments/assets/472f08ee-8b8a-4940-bd9a-57a8b3718680
 
 </td></tr></table>
 </div>
-
-<p align="center"><sub>37 秒中文功能演示。</sub></p>
 
 ## 功能概览
 

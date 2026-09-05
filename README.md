@@ -22,12 +22,10 @@ or workflow changes required**.
 <div align="center">
 <table><tr><td width="320">
 
-https://github.com/user-attachments/assets/9431ad9d-0a61-4600-bb0c-75bd17643257
+https://github.com/user-attachments/assets/ce0e2bae-dbbf-43d0-9324-390e75fa48a0
 
 </td></tr></table>
 </div>
-
-<p align="center"><sub>37-second English v0.2.0 walkthrough.</sub></p>
 
 ## Highlights
 
